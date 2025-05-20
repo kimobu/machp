@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 enum MachOParsingError: Error {
     case fileNotFound
@@ -8,24 +9,31 @@ enum MachOParsingError: Error {
 }
 
 class MachOParser {
-
-    static func parseFile(at filePath: String, includeRaw: Bool, recursive: Bool) throws -> String {
+    
+    static func parseFile(at filePath: String,
+                          includeRaw: Bool,
+                          recursive: Bool,
+                          outputPath: String? = nil) throws -> String {
         let fileURL = URL(fileURLWithPath: filePath)
         guard FileManager.default.fileExists(atPath: filePath) else {
             throw MachOParsingError.fileNotFound
         }
-
-        // Load the file data
         let fileData = try Data(contentsOf: fileURL)
         
-        // Constants for Mach-O and Fat binary magic numbers
+        // Simple debug helper
+        let dbg: (String) -> Void = { msg in
+            if DebugConfig.isEnabled { print("[MachOParser] \(msg)") }
+        }
+        
+        // Magic numbers & constants
         let FAT_MAGIC: UInt32    = 0xcafebabe
-        let FAT_CIGAM: UInt32    = 0xbebafeca
+        let FAT_MAGIC_64: UInt32 = 0xcafebabf
         let MH_MAGIC_64: UInt32  = 0xfeedfacf
         let MH_CIGAM_64: UInt32  = 0xcffaedfe
         let CPU_ARCH_ABI64: UInt32 = 0x01000000
+        let LC_CODE_SIGNATURE: UInt32 = 0x1d
         
-        // Prepare the result dictionary with basic file metadata
+        // Base output dictionary
         var result: [String: Any] = [
             "filePath": filePath,
             "includeRaw": includeRaw,
@@ -33,238 +41,204 @@ class MachOParser {
             "fileSize": fileData.count
         ]
         
-        // Read the magic number from the file
+        // Make sure we can at least read the magic
         guard fileData.count >= 4 else {
-            throw MachOParsingError.invalidFormat("File is too small to be a valid Mach-O binary")
+            throw MachOParsingError.invalidFormat("File is too small to be a valid Mach‑O binary")
         }
-        let magic: UInt32 = fileData.withUnsafeBytes { $0.load(as: UInt32.self) }
-
-        // Constant for LC_CODE_SIGNATURE command
-        let LC_CODE_SIGNATURE: UInt32 = 0x1d
-
-        if magic == FAT_MAGIC || magic == FAT_CIGAM || magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64 {
-            let isBigEndian = (magic == FAT_MAGIC || magic == FAT_MAGIC_64)
-            let is64Bit = (magic == FAT_MAGIC_64 || magic == FAT_CIGAM_64)
-            
-            // Ensure we have enough data for the fat header (8 bytes)
-            guard fileData.count >= 8 else {
-                throw MachOParsingError.parsingFailed("Incomplete fat header")
+        
+        // All fat headers are big‑endian, so interpret magic that way
+        let rawMagic: UInt32 = fileData.withUnsafeBytes { $0.load(as: UInt32.self) }
+        let magic: UInt32    = UInt32(bigEndian: rawMagic)
+        dbg("Top‑level magic: 0x\(String(format: "%08x", magic))")
+        
+        // Unified slice parser
+        func parseMachOSlice(sliceOffset: Int, sliceSize: Int) throws -> [String: Any] {
+            dbg("Parsing Mach‑O slice @\(sliceOffset) (\(sliceSize) bytes)")
+            let rawSliceMagic: UInt32 = fileData.withUnsafeBytes {
+                $0.load(fromByteOffset: sliceOffset, as: UInt32.self)
             }
+            let sliceMagic: UInt32 = UInt32(bigEndian: rawSliceMagic)
+            dbg("Slice header magic: 0x\(String(format: "%08x", sliceMagic))")
+            var sliceInfo: [String: Any] = [
+                "offset": sliceOffset,
+                "size": sliceSize
+            ]
             
-            // Read the number of architecture slices
-            let nfatArchRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
-            let nfatArch = isBigEndian ? UInt32(bigEndian: nfatArchRaw) : UInt32(littleEndian: nfatArchRaw)
-            
-            var slices: [[String: Any]] = []
-            
-            if is64Bit {
-                // Each fat_arch_64 entry is 32 bytes long
-                let fatArchSize = 32
-                for i in 0..<nfatArch {
-                    let archEntryOffset = 8 + Int(i) * fatArchSize
-                    guard archEntryOffset + fatArchSize <= fileData.count else {
-                        throw MachOParsingError.parsingFailed("Unexpected end of file when reading fat_arch_64 entry \(i)")
-                    }
-
-                    let cputypeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset, as: UInt32.self) }
-                    let cpusubtypeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset + 4, as: UInt32.self) }
-                    let offsetRaw: UInt64 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset + 8, as: UInt64.self) }
-                    let sizeRaw: UInt64 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset + 16, as: UInt64.self) }
-                    let alignRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset + 24, as: UInt32.self) }
-                    
-                    let cputype = isBigEndian ? UInt32(bigEndian: cputypeRaw) : UInt32(littleEndian: cputypeRaw)
-                    let cpusubtype = isBigEndian ? UInt32(bigEndian: cpusubtypeRaw) : UInt32(littleEndian: cpusubtypeRaw)
-                    let sliceOffset = isBigEndian ? UInt64(bigEndian: offsetRaw) : UInt64(littleEndian: offsetRaw)
-                    let sliceSize = isBigEndian ? UInt64(bigEndian: sizeRaw) : UInt64(littleEndian: sizeRaw)
-                    let align = isBigEndian ? UInt32(bigEndian: alignRaw) : UInt32(littleEndian: alignRaw)
-                    
-                    // Process only 64-bit slices (using the CPU_ARCH_ABI64 flag)
-                    if (cputype & CPU_ARCH_ABI64) != 0 {
-                        var sliceInfo: [String: Any] = [
-                            "cputype": cputype,
-                            "cpusubtype": cpusubtype,
-                            "offset": sliceOffset,
-                            "size": sliceSize,
-                            "align": align
-                        ]
-
-                        let headerOffset = Int(sliceOffset)
-                        var headerInfo = try HeaderParser.parseMachOHeader(from: fileData, at: headerOffset)
-                        let magicStr = headerInfo["magic"] as? String ?? ""
-                        let isBigEndianSlice = magicStr.lowercased() == "0xcffaedfe"
-                        
-                        if let ncmds = headerInfo["ncmds"] as? UInt32 {
-                            let loadCommands = try LoadCommandParser.parseLoadCommands(from: fileData, offset: headerOffset + 32, ncmds: ncmds, isBigEndian: isBigEndianSlice)
-                            headerInfo["loadCommands"] = loadCommands
-                            var segments: [[String: Any]] = []
-                            var cmdOffset = headerOffset + 32
-                            for _ in 0..<ncmds {
-                                let cmdRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset, as: UInt32.self) }
-                                let cmd = isBigEndianSlice ? UInt32(bigEndian: cmdRaw) : UInt32(littleEndian: cmdRaw)
-                                let cmdsizeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 4, as: UInt32.self) }
-                                let cmdsize = isBigEndianSlice ? UInt32(bigEndian: cmdsizeRaw) : UInt32(littleEndian: cmdsizeRaw)
-                                if cmd == 0x19 {
-                                    let segmentInfo = try SegmentSectionParser.parseSegmentAndSections(from: fileData, at: cmdOffset, isBigEndian: isBigEndianSlice)
-                                    segments.append(segmentInfo)
-                                } else if cmd == LC_CODE_SIGNATURE {
-                                    let csOffsetRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 8, as: UInt32.self) }
-                                    let csSizeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 12, as: UInt32.self) }
-                                    let csOffset = isBigEndianSlice ? UInt32(bigEndian: csOffsetRaw) : UInt32(littleEndian: csOffsetRaw)
-                                    let csSize = isBigEndianSlice ? UInt32(bigEndian: csSizeRaw) : UInt32(littleEndian: csSizeRaw)
-                                    let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(from: fileData, csOffset: Int(csOffset), csSize: Int(csSize), isBigEndian: isBigEndianSlice)
-                                    headerInfo["codeSignature"] = csInfo
-                                }
-                                cmdOffset += Int(cmdsize)
-                            }
-                            headerInfo["segments"] = segments
-                        }
-                        
-                        sliceInfo["header"] = headerInfo
-                        
-                        if includeRaw {
-                            let sliceStart = Int(sliceOffset)
-                            let sliceEnd = sliceStart + Int(sliceSize)
-                            if sliceEnd <= fileData.count {
-                                let sliceData = fileData.subdata(in: sliceStart..<sliceEnd)
-                                sliceInfo["rawDataBase64"] = sliceData.base64EncodedString()
-                            } else {
-                                sliceInfo["rawDataError"] = "Slice data extends beyond file size."
-                            }
-                        }
-
-                        slices.append(sliceInfo)
-                    }
-                }
-            } else {
-                // 32-bit fat header: each fat_arch entry is 20 bytes long
-                let fatArchSize = 20
-                for i in 0..<nfatArch {
-                    let archEntryOffset = 8 + Int(i) * fatArchSize
-                    guard archEntryOffset + fatArchSize <= fileData.count else {
-                        throw MachOParsingError.parsingFailed("Unexpected end of file when reading fat_arch entry \(i)")
-                    }
-
-                    let cputypeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset, as: UInt32.self) }
-                    let cpusubtypeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset + 4, as: UInt32.self) }
-                    let sliceOffsetRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset + 8, as: UInt32.self) }
-                    let sliceSizeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset + 12, as: UInt32.self) }
-                    let alignRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: archEntryOffset + 16, as: UInt32.self) }
-                    
-                    let cputype = isBigEndian ? UInt32(bigEndian: cputypeRaw) : UInt32(littleEndian: cputypeRaw)
-                    let cpusubtype = isBigEndian ? UInt32(bigEndian: cpusubtypeRaw) : UInt32(littleEndian: cpusubtypeRaw)
-                    let sliceOffset = isBigEndian ? UInt32(bigEndian: sliceOffsetRaw) : UInt32(littleEndian: sliceOffsetRaw)
-                    let sliceSize = isBigEndian ? UInt32(bigEndian: sliceSizeRaw) : UInt32(littleEndian: sliceSizeRaw)
-                    let align = isBigEndian ? UInt32(bigEndian: alignRaw) : UInt32(littleEndian: alignRaw)
-                    
-                    if (cputype & CPU_ARCH_ABI64) != 0 {
-                        var sliceInfo: [String: Any] = [
-                            "cputype": cputype,
-                            "cpusubtype": cpusubtype,
-                            "offset": sliceOffset,
-                            "size": sliceSize,
-                            "align": align
-                        ]
-
-                        let headerOffset = Int(sliceOffset)
-                        var headerInfo = try HeaderParser.parseMachOHeader(from: fileData, at: headerOffset)
-                        let magicStr = headerInfo["magic"] as? String ?? ""
-                        let isBigEndianSlice = magicStr.lowercased() == "0xcffaedfe"
-                        
-                        if let ncmds = headerInfo["ncmds"] as? UInt32 {
-                            let loadCommands = try LoadCommandParser.parseLoadCommands(from: fileData, offset: headerOffset + 32, ncmds: ncmds, isBigEndian: isBigEndianSlice)
-                            headerInfo["loadCommands"] = loadCommands
-                            var segments: [[String: Any]] = []
-                            var cmdOffset = headerOffset + 32
-                            for _ in 0..<ncmds {
-                                let cmdRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset, as: UInt32.self) }
-                                let cmd = isBigEndianSlice ? UInt32(bigEndian: cmdRaw) : UInt32(littleEndian: cmdRaw)
-                                let cmdsizeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 4, as: UInt32.self) }
-                                let cmdsize = isBigEndianSlice ? UInt32(bigEndian: cmdsizeRaw) : UInt32(littleEndian: cmdsizeRaw)
-                                if cmd == 0x19 {
-                                    let segmentInfo = try SegmentSectionParser.parseSegmentAndSections(from: fileData, at: cmdOffset, isBigEndian: isBigEndianSlice)
-                                    segments.append(segmentInfo)
-                                } else if cmd == LC_CODE_SIGNATURE {
-                                    let csOffsetRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 8, as: UInt32.self) }
-                                    let csSizeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 12, as: UInt32.self) }
-                                    let csOffset = isBigEndianSlice ? UInt32(bigEndian: csOffsetRaw) : UInt32(littleEndian: csOffsetRaw)
-                                    let csSize = isBigEndianSlice ? UInt32(bigEndian: csSizeRaw) : UInt32(littleEndian: csSizeRaw)
-                                    let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(from: fileData, csOffset: Int(csOffset), csSize: Int(csSize), isBigEndian: isBigEndianSlice)
-                                    headerInfo["codeSignature"] = csInfo
-                                }
-                                cmdOffset += Int(cmdsize)
-                            }
-                            headerInfo["segments"] = segments
-                        }
-                        
-                        sliceInfo["header"] = headerInfo
-                        
-                        if includeRaw {
-                            let sliceStart = Int(sliceOffset)
-                            let sliceEnd = sliceStart + Int(sliceSize)
-                            if sliceEnd <= fileData.count {
-                                let sliceData = fileData.subdata(in: sliceStart..<sliceEnd)
-                                sliceInfo["rawDataBase64"] = sliceData.base64EncodedString()
-                            } else {
-                                sliceInfo["rawDataError"] = "Slice data extends beyond file size."
-                            }
-                        }
-
-                        slices.append(sliceInfo)
-                    }
-                }
+            // Extract just this slice's data
+            let sliceEnd = sliceOffset + sliceSize
+            guard sliceEnd <= fileData.count else {
+                throw MachOParsingError.parsingFailed("Slice extends beyond file size")
             }
+            let sliceData = fileData.subdata(in: sliceOffset..<sliceEnd)
+            // Compute slice-relative header offset
+            let headerOffsetAbsolute = sliceOffset
+            let headerOffsetInSlice = headerOffsetAbsolute - sliceOffset
+
+            // Compute SHA-256 of raw slice bytes for output naming
+            let sha256 = SHA256.hash(data: sliceData)
+                .compactMap { String(format: "%02x", $0) }
+                .joined()
+            sliceInfo["sha256"] = sha256
             
-            result["fat"] = true
-            result["is64BitFat"] = is64Bit
-            result["nfatArch"] = nfatArch
-            result["slices"] = slices
-            result["parsed"] = true
-        } else if magic == MH_MAGIC_64 || magic == MH_CIGAM_64 {
-            // Single 64-bit Mach-O file
-            result["fat"] = false
-            var headerInfo = try HeaderParser.parseMachOHeader(from: fileData, at: 0)
-            let magicStr = headerInfo["magic"] as? String ?? ""
-            let isBigEndianSingle = magicStr.lowercased() == "0xcffaedfe"
+            // ---------- Header ----------
+            var headerInfo = try HeaderParser.parseMachOHeader(from: sliceData, at: headerOffsetInSlice)
+            let magicStr = (headerInfo["magic"] as? String ?? "").lowercased()
+            let isBigEndianSlice = magicStr == "0xcffaedfe"
+            
+            // ---------- Load Commands ----------
             if let ncmds = headerInfo["ncmds"] as? UInt32 {
-                let loadCommands = try LoadCommandParser.parseLoadCommands(from: fileData, offset: 32, ncmds: ncmds, isBigEndian: isBigEndianSingle)
+                let lcOffset = headerOffsetInSlice + 32 // after mach_header_64
+                let loadCommands = try LoadCommandParser.parseLoadCommands(
+                    from: sliceData,
+                    offset: lcOffset,
+                    ncmds: ncmds,
+                    isBigEndian: isBigEndianSlice
+                )
                 headerInfo["loadCommands"] = loadCommands
+                
+                // ---------- Segments / Code‑sig ----------
                 var segments: [[String: Any]] = []
-                var cmdOffset = 32
+                var cmdOffset = lcOffset
                 for _ in 0..<ncmds {
-                    let cmdRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset, as: UInt32.self) }
-                    let cmd = isBigEndianSingle ? UInt32(bigEndian: cmdRaw) : UInt32(littleEndian: cmdRaw)
-                    let cmdsizeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 4, as: UInt32.self) }
-                    let cmdsize = isBigEndianSingle ? UInt32(bigEndian: cmdsizeRaw) : UInt32(littleEndian: cmdsizeRaw)
-                    if cmd == 0x19 {
-                        let segmentInfo = try SegmentSectionParser.parseSegmentAndSections(from: fileData, at: cmdOffset, isBigEndian: isBigEndianSingle)
-                        segments.append(segmentInfo)
+                    let cmdRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset, as: UInt32.self) }
+                    let cmd = isBigEndianSlice ? UInt32(bigEndian: cmdRaw) : UInt32(littleEndian: cmdRaw)
+                    
+                    let cmdsizeRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 4, as: UInt32.self) }
+                    let cmdsize = isBigEndianSlice ? UInt32(bigEndian: cmdsizeRaw) : UInt32(littleEndian: cmdsizeRaw)
+                    
+                    if cmd == 0x19 { // LC_SEGMENT_64
+                        let seg = try SegmentSectionParser.parseSegmentAndSections(
+                            from: sliceData,
+                            at: cmdOffset,
+                            isBigEndian: isBigEndianSlice
+                        )
+                        segments.append(seg)
                     } else if cmd == LC_CODE_SIGNATURE {
-                        let csOffsetRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 8, as: UInt32.self) }
-                        let csSizeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 12, as: UInt32.self) }
-                        let csOffset = isBigEndianSingle ? UInt32(bigEndian: csOffsetRaw) : UInt32(littleEndian: csOffsetRaw)
-                        let csSize = isBigEndianSingle ? UInt32(bigEndian: csSizeRaw) : UInt32(littleEndian: csSizeRaw)
-                        let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(from: fileData, csOffset: Int(csOffset), csSize: Int(csSize), isBigEndian: isBigEndianSingle)
+                        let csOffsetRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 8, as: UInt32.self) }
+                        let csSizeRaw: UInt32   = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 12, as: UInt32.self) }
+                        let csOffset = isBigEndianSlice ? UInt32(bigEndian: csOffsetRaw) : UInt32(littleEndian: csOffsetRaw)
+                        let csSize   = isBigEndianSlice ? UInt32(bigEndian: csSizeRaw)   : UInt32(littleEndian: csSizeRaw)
+                        dbg("Starting csOffset \(csOffset), size \(csSize)")
+                        let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(
+                            from: sliceData,
+                            csOffset: Int(csOffset),
+                            csSize:   Int(csSize)
+                        )
                         headerInfo["codeSignature"] = csInfo
                     }
                     cmdOffset += Int(cmdsize)
                 }
                 headerInfo["segments"] = segments
             }
-            result["header"] = headerInfo
+            
+            sliceInfo["header"] = headerInfo
+            
+            // ---------- Raw Data (optional) ----------
             if includeRaw {
-                result["rawDataBase64"] = fileData.base64EncodedString()
+                let sliceEnd = sliceOffset + sliceSize
+                if sliceEnd <= fileData.count {
+                    sliceInfo["rawDataBase64"] = sliceData.base64EncodedString()
+                } else {
+                    sliceInfo["rawDataError"] = "Slice extends beyond file size"
+                }
             }
-            result["parsed"] = true
+            return sliceInfo
+        }
+        
+        // ---------- FAT or THIN ----------
+        if magic == FAT_MAGIC || magic == FAT_MAGIC_64 {
+            dbg("Detected fat Mach‑O")
+            let is64Fat      = (magic == FAT_MAGIC_64)
+            let fatArchSize  = is64Fat ? 32 : 20
+            
+            guard fileData.count >= 8 else {
+                throw MachOParsingError.parsingFailed("Incomplete fat header")
+            }
+            
+            let nfatArchRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
+            let nfatArch            = UInt32(bigEndian: nfatArchRaw)
+            dbg("Number of architecture slices: \(nfatArch)")
+            
+            var slices: [[String: Any]] = []
+            for i in 0..<nfatArch {
+                let entryOffset = 8 + Int(i) * fatArchSize
+                guard entryOffset + fatArchSize <= fileData.count else {
+                    throw MachOParsingError.parsingFailed("Unexpected EOF reading fat‑arch \(i)")
+                }
+                
+                // Parse fat_arch(64) entry (always big‑endian)
+                let cputype:    UInt32
+                let cpusubtype: UInt32
+                let sliceOffset: UInt64
+                let sliceSize:  UInt64
+                let align:      UInt32
+                
+                if is64Fat {
+                    cputype     = UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset,     as: UInt32.self) })
+                    cpusubtype  = UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 4, as: UInt32.self) })
+                    sliceOffset = UInt64(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 8, as: UInt64.self) })
+                    sliceSize   = UInt64(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 16, as: UInt64.self) })
+                    align       = UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 24, as: UInt32.self) })
+                } else {
+                    cputype     = UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset,     as: UInt32.self) })
+                    cpusubtype  = UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 4, as: UInt32.self) })
+                    sliceOffset = UInt64(UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 8,  as: UInt32.self) }))
+                    sliceSize   = UInt64(UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 12, as: UInt32.self) }))
+                    align       = UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 16, as: UInt32.self) })
+                }
+                
+                dbg("Slice \(i): cputype=\(cputype) cpusubtype=\(cpusubtype) offset=\(sliceOffset) size=\(sliceSize)")
+                
+                // Only handle 64‑bit slices for now
+                if (cputype & CPU_ARCH_ABI64) != 0 {
+                    var sliceDict = try parseMachOSlice(sliceOffset: Int(sliceOffset), sliceSize: Int(sliceSize))
+                    sliceDict["cputype"]    = cputype
+                    sliceDict["cpusubtype"] = cpusubtype
+                    sliceDict["align"]      = align
+                    slices.append(sliceDict)
+                } else {
+                    dbg("Skipping non‑64‑bit slice \(i)")
+                }
+            }
+            
+            result["fat"]        = true
+            result["is64BitFat"] = is64Fat
+            result["nfatArch"]   = nfatArch
+            result["slices"]     = slices
+            result["parsed"]     = true
+        } else if magic == MH_MAGIC_64 || magic == MH_CIGAM_64 {
+            dbg("Detected thin 64‑bit Mach‑O")
+            result["fat"]         = false
+            result["headerSlice"] = try parseMachOSlice(sliceOffset: 0, sliceSize: fileData.count)
+            result["parsed"]      = true
         } else {
-            throw MachOParsingError.invalidFormat("Not a valid Mach-O binary")
+            throw MachOParsingError.invalidFormat("Unrecognized Mach‑O / fat header")
         }
         
-        // If recursive parsing is enabled, add a placeholder for nested files (not implemented in this snippet)
-        if recursive {
-            result["filesParsed"] = []
+        // Placeholder for recursive handling
+        if recursive { result["filesParsed"] = [] }
+
+        // Write per-slice JSON files for FAT binaries only if output path is set
+        if let outPath = outputPath,
+           let isFat = result["fat"] as? Bool, isFat,
+           let slices = result["slices"] as? [[String: Any]] {
+            let outputDirectory = URL(fileURLWithPath: outPath)
+            try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true, attributes: nil)
+            for slice in slices {
+                guard let offset = slice["offset"] as? Int,
+                      let size = slice["size"] as? Int else { continue }
+                // Extract raw Mach-O bytes for this slice
+                let rawMachOData = fileData.subdata(in: offset..<offset+size)
+                // Use precomputed hash from slice info
+                guard let hash = slice["sha256"] as? String else { continue }
+
+                let outURL = outputDirectory.appendingPathComponent("\(hash).json")
+                // Format and write the JSON for this slice
+                let sliceJSON = try JSONOutputFormatter.format(output: slice)
+                try sliceJSON.write(to: outURL, atomically: true, encoding: String.Encoding.utf8)
+            }
         }
-        
-        // Convert the result dictionary to a JSON string using JSONOutputFormatter
+
         return try JSONOutputFormatter.format(output: result)
     }
 }

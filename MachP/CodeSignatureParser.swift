@@ -10,63 +10,237 @@ func SecCMSCertificatesOnlyMessageCopyCertificates(_ cms: CFData, _ error: Unsaf
 public class CodeSignatureParser {
     
     // Constants for code signature blob types
-    static let CSSLOT_REQUIREMENT: UInt32 = 0xfade0c00       // single requirement
-    static let CSSLOT_REQUIREMENT_SET: UInt32 = 0xfade0c01   // requirement set
-    static let CSSLOT_CODEDIRECTORY: UInt32 = 0xfade0c02       // CodeDirectory
-    static let CSSLOT_ENTITLEMENTS: UInt32 = 0xfade7171        // entitlement blob
-    static let CSSLOT_CMS_SIGNATURE: UInt32 = 0xfade0b01       // CMS signature blob
-    static let CSSLOT_DETACHED_SIGNATURE: UInt32 = 0xfade0cc1   // detached multi-architecture signature
+    static let CSMAGIC_REQUIREMENT: UInt32         = 0xfade0c00
+    static let CSMAGIC_REQUIREMENTS: UInt32        = 0xfade0c01
+    static let CSMAGIC_CODEDIRECTORY: UInt32       = 0xfade0c02
+    static let CSMAGIC_EMBEDDED_ENTITLEMENTS: UInt32 = 0xfade7171
+    static let CSMAGIC_DER_EMBEDDED_ENTITLEMENTS: UInt32 = 0xfade7172
+    static let CSMAGIC_BLOBWRAPPER: UInt32         = 0xfade0b01
+    static let CSMAGIC_EMBEDDED_SIGNATURE: UInt32  = 0xfade0cc0
+    static let CSMAGIC_DETACHED_SIGNATURE: UInt32  = 0xfade0cc1
     
-    private static func readUInt32(from data: Data, at offset: Int) throws -> UInt32 {
+    // Debug logging helper
+    private static func dbg(_ msg: String) {
+        if DebugConfig.isEnabled {
+            print("[CodeSignatureParser] \(msg)")
+        }
+    }
+    
+
+    private static func readUInt32(from data: Data, at offset: Int, bigEndian: Bool = true) throws -> UInt32 {
         guard data.count >= offset + 4 else {
             throw MachOParsingError.parsingFailed("Insufficient data to read UInt32 at offset \(offset)")
         }
-        var value: UInt32 = 0
-        withUnsafeMutableBytes(of: &value) { pointer in
+        var raw: UInt32 = 0
+        withUnsafeMutableBytes(of: &raw) { pointer in
             data.copyBytes(to: pointer, from: offset..<(offset + 4))
         }
-        return UInt32(bigEndian: value)
+        return bigEndian ? UInt32(bigEndian: raw) : UInt32(littleEndian: raw)
     }
     
     /// Extracts certificate common names from a CMS blob containing PKCS7 encoded certificates.
     /// - Parameter cmsData: The CMS blob data.
     /// - Returns: An array of certificate common names if extraction is successful, otherwise nil.
     public static func extractCMSCertificates(from cmsData: Data) -> [String]? {
-        let cfData = cmsData as CFData
-        var error: Unmanaged<CFError>?
-        guard let certArray = SecCMSCertificatesOnlyMessageCopyCertificates(cfData, &error) as? [SecCertificate] else {
-            return nil
+    dbg("extractCMSCertificates called with data length \(cmsData.count)")
+    // Strip the 8-byte BlobHeader (magic + length)
+    guard cmsData.count > 8 else {
+        dbg("CMS data too short to strip header")
+        return nil
+    }
+    let derData = cmsData.subdata(in: 8..<cmsData.count)
+    dbg("Stripped header, DER data length: \(derData.count)")
+    
+    // Use CMSDecoder API to parse the PKCS#7 and extract certificates
+    var decoder: CMSDecoder?
+    var status = CMSDecoderCreate(&decoder)
+    guard status == errSecSuccess, let decoder = decoder else {
+        dbg("CMSDecoderCreate failed: \(status)")
+        return []
+    }
+    // Feed DER data to CMSDecoder
+    status = derData.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> OSStatus in
+        guard let baseAddress = buffer.baseAddress else {
+            return errSecParam
         }
-        var certificateNames: [String] = []
-        for certificate in certArray {
-            if let subjectSummary = SecCertificateCopySubjectSummary(certificate) as String? {
-                certificateNames.append(subjectSummary)
-            }
+        return CMSDecoderUpdateMessage(decoder, baseAddress, derData.count)
+    }
+    guard status == errSecSuccess else {
+        dbg("CMSDecoderUpdateMessage failed: \(status)")
+        return []
+    }
+    status = CMSDecoderFinalizeMessage(decoder)
+    guard status == errSecSuccess else {
+        dbg("CMSDecoderFinalizeMessage failed: \(status)")
+        return []
+    }
+    var certsCF: CFArray?
+    status = CMSDecoderCopyAllCerts(decoder, &certsCF)
+    guard status == errSecSuccess, let certsArray = certsCF as? [SecCertificate] else {
+        dbg("CMSDecoderCopyAllCerts failed: \(status)")
+        return []
+    }
+    
+    dbg("Extracted \(certsArray.count) certificates via CMSDecoder")
+    var certificateNames: [String] = []
+    for cert in certsArray {
+        if let name = SecCertificateCopySubjectSummary(cert) as String? {
+            certificateNames.append(name)
         }
-        return certificateNames
+    }
+    return certificateNames
     }
     
     /// Extracts binary entitlements from a plist-encoded entitlement blob.
     /// - Parameter entitlementData: The entitlement blob data.
     /// - Returns: A dictionary where each entitlement key is mapped to true if present, otherwise nil if parsing fails.
-    public static func extractEntitlements(from entitlementData: Data) -> [String: Bool]? {
+    public static func extractEntitlements(from entitlementData: Data) -> [String]? {
+        dbg("extractEntitlements called with data length \(entitlementData.count)")
+        // Skip the 8-byte BlobHeader (magic + length) to get the actual plist payload
+        guard entitlementData.count > 8 else {
+            dbg("Entitlement data too short to strip header")
+            return nil
+        }
+        let plistData = entitlementData.subdata(in: 8..<entitlementData.count)
+        dbg("Stripped header, plistData length: \(plistData.count)")
         var format = PropertyListSerialization.PropertyListFormat.xml
         do {
-            let plist = try PropertyListSerialization.propertyList(from: entitlementData, options: .mutableContainersAndLeaves, format: &format)
-            print("Parsed entitlement plist:", plist)
+            let plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: &format)
             if let dict = plist as? [String: Any] {
-                var entitlements: [String: Bool] = [:]
-                for key in dict.keys {
-                    entitlements[key] = true
-                }
-                return entitlements
+                return Array(dict.keys)
             }
         } catch {
-            // Parsing failed, return nil
+            dbg("Failed to parse entitlement plist: \(error)")
         }
         return nil
     }
-    
+
+    /// Parses DER-encoded entitlements (ASN.1-wrapped plist) and returns entitlement keys.
+    /// Parses DER-encoded entitlements (ASN.1-wrapped plist) and returns entitlement keys.
+    public static func extractEntitlementsDER(from derData: Data) -> [String]? {
+        dbg("extractEntitlementsDER called with data length \(derData.count)")
+        // Strip the 8-byte BlobHeader
+        guard derData.count > 8 else {
+            dbg("DER entitlement data too short to strip header")
+            return nil
+        }
+        let data = derData.subdata(in: 8..<derData.count)
+        var idx = 0
+
+        // Read outer sequence tag (Application 16, 0x70)
+        guard idx < data.count else { return nil }
+        idx += 1
+        // Read outer length
+        guard idx < data.count else { return nil }
+        let lengthByte = data[idx]; idx += 1
+        var length = 0
+        if (lengthByte & 0x80) != 0 {
+            let byteCount = Int(lengthByte & 0x7F)
+            for _ in 0..<byteCount {
+                guard idx < data.count else { return nil }
+                length = (length << 8) | Int(data[idx])
+                idx += 1
+            }
+        } else {
+            length = Int(lengthByte)
+        }
+
+        // Skip the INTEGER wrapper (tag=0x02)
+        guard idx + 2 <= data.count else { return nil }
+        idx += 1               // skip tag
+        let intLen = Int(data[idx]); idx += 1
+        idx += intLen          // skip integer contents
+
+        // Context-specific dict tag (0xB0)
+        guard idx < data.count else { return nil }
+        idx += 1
+        // Read dict length
+        guard idx < data.count else { return nil }
+        let dictLenByte = data[idx]; idx += 1
+        var dictLen = 0
+        if (dictLenByte & 0x80) != 0 {
+            let byteCount = Int(dictLenByte & 0x7F)
+            for _ in 0..<byteCount {
+                guard idx < data.count else { return nil }
+                dictLen = (dictLen << 8) | Int(data[idx])
+                idx += 1
+            }
+        } else {
+            dictLen = Int(dictLenByte)
+        }
+
+        // Walk entries and pull out each UTF8 key
+        var keys: [String] = []
+        let end = idx + dictLen
+        while idx < end {
+            // Expect sequence wrapper (0x30)
+            guard data[idx] == 0x30 else { break }
+            idx += 1
+            // Entry length
+            guard idx < data.count else { break }
+            let entryLen = Int(data[idx]); idx += 1
+            let entryEnd = idx + entryLen
+
+            // Expect UTF8 string tag (0x0C)
+            guard data[idx] == 0x0C else { break }
+            idx += 1
+            guard idx < data.count else { break }
+            let keyLen = Int(data[idx]); idx += 1
+            guard idx + keyLen <= data.count else { break }
+            let keyData = data.subdata(in: idx..<(idx + keyLen))
+            if let key = String(data: keyData, encoding: .utf8) {
+                keys.append(key)
+            }
+            idx = entryEnd
+        }
+
+        return keys
+    }
+
+    /// Parses a code signing requirement blob into its string representation.
+    public static func extractRequirements(from reqData: Data) -> String? {
+        dbg("extractRequirements called with data length \(reqData.count)")
+        // Strip the 8-byte BlobHeader
+        guard reqData.count > 8 else {
+            dbg("Requirement data too short to strip header")
+            return nil
+        }
+        let data = reqData.subdata(in: 8..<reqData.count)
+        dbg("Stripped header, requirement data length: \(data.count)")
+        var requirement: SecRequirement?
+        let status = SecRequirementCreateWithData(data as CFData, SecCSFlags(), &requirement)
+        if status != errSecSuccess || requirement == nil {
+            dbg("SecRequirementCreateWithData failed: \(status); falling back to ASCII extraction")
+            // Fallback: extract contiguous printable ASCII substrings of length >= 4
+            var substrings: [String] = []
+            var current = ""
+            for byte in data {
+                if byte >= 32 && byte <= 126 {
+                    current.append(Character(UnicodeScalar(byte)))
+                } else {
+                    if current.count >= 4 {
+                        substrings.append(current)
+                    }
+                    current = ""
+                }
+            }
+            if current.count >= 4 {
+                substrings.append(current)
+            }
+            return substrings.joined(separator: ", ")
+        }
+        let req = requirement!
+        // Obtain the requirement’s string via SecRequirementCopyString
+        var cfString: CFString? = nil
+        let status2 = SecRequirementCopyString(req, SecCSFlags(), &cfString)
+        guard status2 == errSecSuccess, let cfString = cfString else {
+            dbg("SecRequirementCopyString failed: \(status2)")
+            return nil
+        }
+        let str = cfString as String
+        dbg("Requirement string: \(str)")
+        return str
+    }
     /// Parses a CodeDirectory blob and extracts key information.
     /// - Parameter blobData: The CodeDirectory blob data.
     /// - Returns: A dictionary containing parsed CodeDirectory fields if successful, otherwise nil.
@@ -170,6 +344,8 @@ public class CodeSignatureParser {
         return result
     }
     
+
+    
     /// Parses the code signature blob (superblob) from the given data at the specified offset and size.
     /// - Parameters:
     ///   - fileData: The complete Mach-O file data
@@ -178,24 +354,30 @@ public class CodeSignatureParser {
     ///   - isBigEndian: Boolean indicating whether the data is in big-endian format
     /// - Returns: A dictionary containing extracted code signing blobs (codedirectory, entitlements, cms, etc.)
     public static func parseCodeSignature(from fileData: Data, at offset: Int, size: Int, isBigEndian: Bool) throws -> [String: Any] {
+        // Debug helper
+        let dbg: (String) -> Void = { msg in
+            if DebugConfig.isEnabled { print("[CodeSignatureParser] \(msg)") }
+        }
+        dbg("Starting parseCodeSignature at offset \(offset), size \(size)")
+
         // Ensure there's enough data for the superblob header (12 bytes)
         guard fileData.count >= offset + 12 else {
             throw MachOParsingError.parsingFailed("Incomplete code signature superblob header")
         }
         
         // Read superblob header: magic, length, count
-        let magic = try readUInt32(from: fileData, at: offset)
+        let magic = try readUInt32(from: fileData, at: offset, bigEndian: true)
         
         // Expected magic values for code signature superblob
         let CS_MAGIC_EMBEDDED_SIGNATURE: UInt32 = 0xfade0cc0
         let CS_MAGIC_DETACHED_SIGNATURE: UInt32 = 0xfade0cc1
         guard magic == CS_MAGIC_EMBEDDED_SIGNATURE || magic == CS_MAGIC_DETACHED_SIGNATURE else {
-            throw MachOParsingError.invalidFormat("Invalid code signature superblob magic: \(String(format: "0x%08x", magic))")
+            throw MachOParsingError.invalidFormat("Invalid code signature superblob magic: 0x\(String(format: "%08x", magic))")
         }
         
-        let totalLength = try readUInt32(from: fileData, at: offset + 4)
+        let totalLength = try readUInt32(from: fileData, at: offset + 4, bigEndian: true)
         
-        let count = try readUInt32(from: fileData, at: offset + 8)
+        let count = try readUInt32(from: fileData, at: offset + 8, bigEndian: true)
         
         var result: [String: Any] = [:]
         
@@ -206,77 +388,68 @@ public class CodeSignatureParser {
             guard fileData.count >= indexOffset + indexSize else {
                 throw MachOParsingError.parsingFailed("Incomplete code signature blob index at \(i)")
             }
-            
-            let type = try readUInt32(from: fileData, at: indexOffset)
-            
-            let blobOffset = try readUInt32(from: fileData, at: indexOffset + 4)
+            _ = try readUInt32(from: fileData, at: indexOffset, bigEndian: true)
+            let blobOffset = try readUInt32(from: fileData, at: indexOffset + 4, bigEndian: true)
             
             // The blob offset is relative to the beginning of the code signature blob
             let blobAbsoluteOffset = offset + Int(blobOffset)
             
             // Ensure there's enough data for the blob header (8 bytes)
             guard fileData.count >= blobAbsoluteOffset + 8 else {
-                throw MachOParsingError.parsingFailed("Incomplete blob header for code signature type \(type)")
+                throw MachOParsingError.parsingFailed("Incomplete blob header at offset \(blobAbsoluteOffset)")
             }
             
             // Read blob header: magic and length
-            let blobMagic = try readUInt32(from: fileData, at: blobAbsoluteOffset)
-            
-            let blobLength = try readUInt32(from: fileData, at: blobAbsoluteOffset + 4)
+            let blobMagic = try readUInt32(from: fileData, at: blobAbsoluteOffset, bigEndian: true)
+            let blobLength = try readUInt32(from: fileData, at: blobAbsoluteOffset + 4, bigEndian: true)
+            dbg("Blob header at \(blobAbsoluteOffset): magic=0x\(String(format: "%08x", blobMagic)), length=\(blobLength)")
             
             // Ensure the blob fits within the fileData
             guard fileData.count >= blobAbsoluteOffset + Int(blobLength) else {
-                throw MachOParsingError.parsingFailed("Blob of type \(type) exceeds data bounds")
+                throw MachOParsingError.parsingFailed("Blob at offset \(blobAbsoluteOffset) exceeds data bounds")
             }
             
             // Extract the blob data and encode it as base64
             let blobData = fileData.subdata(in: blobAbsoluteOffset..<blobAbsoluteOffset + Int(blobLength))
             let blobBase64 = blobData.base64EncodedString()
-            
-            // Map the blob to the proper field based on type using inferred slot numbers
-            // Assumption: The index entry 'type' field stores a small slot number:
-            //    0 => requirement
-            //    1 => requirement set
-            //    2 => CodeDirectory
-            //    3 => entitlements
-            //    4096 (0x1000) => CMS signature
-            // Other types, including detached signature if not mapped, are stored as is
-            print(type)
-            if type == 2 {
-                print("Found CodeDirectory blob with type:", type, "at offset:", blobAbsoluteOffset, "with length:", blobLength)
-                if let parsedCD = parseCodeDirectory(from: blobData) {
-                    result["codedirectory"] = parsedCD
+            switch blobMagic {
+            case CSMAGIC_CODEDIRECTORY:
+                if let cd = parseCodeDirectory(from: blobData) {
+                    result["codedirectory"] = cd
                 } else {
-                    print("parseCodeDirectory returned nil, falling back to base64 blob")
                     result["codedirectory"] = blobBase64
                 }
-            } else if type == 3 {
-                // Attempt to parse the entitlement blob as a plist and extract entitlement keys
-                if let entitlements = extractEntitlements(from: blobData) {
-                    result["entitlements"] = entitlements
+            case CSMAGIC_EMBEDDED_ENTITLEMENTS:
+                if let entitlementKeys = extractEntitlements(from: blobData) {
+                    result["entitlements"] = entitlementKeys
                 } else {
                     result["entitlements"] = blobBase64
                 }
-            } else if type == 0 {
-                result["requirement"] = blobBase64
-            } else if type == 1 {
-                result["requirementSet"] = blobBase64
-            } else if type == 4096 {
-                result["cms"] = blobBase64
-                // Attempt to extract certificate common names from the CMS blob
-                if let cmsCertificates = extractCMSCertificates(from: blobData) {
-                    result["cmsCertificates"] = cmsCertificates
+            case CSMAGIC_DER_EMBEDDED_ENTITLEMENTS:
+                if let derKeys = extractEntitlementsDER(from: blobData) {
+                    result["der_entitlements"] = derKeys
+                } else {
+                    result["der_entitlements"] = blobBase64
                 }
-            } else if type == CSSLOT_DETACHED_SIGNATURE {
-                result["detachedSignature"] = blobBase64
-            } else {
-                // Store unknown blob types in an "other_blobs" dictionary keyed by their type
-                if result["other_blobs"] == nil {
-                    result["other_blobs"] = [String: String]()
+            case CSMAGIC_REQUIREMENT, CSMAGIC_REQUIREMENTS:
+                if let reqStr = extractRequirements(from: blobData) {
+                    result["requirement"] = reqStr
+                } else {
+                    result["requirement"] = blobBase64
                 }
-                var otherBlobs = result["other_blobs"] as! [String: String]
-                otherBlobs[String(format: "0x%08x", type)] = blobBase64
-                result["other_blobs"] = otherBlobs
+            case CSMAGIC_BLOBWRAPPER:
+                // Parse the CMS superblob to extract certificate common names
+                dbg("Parsing CMS blob for certificates")
+                if let certCNs = extractCMSCertificates(from: blobData) {
+                    result["certCommonNames"] = certCNs
+                } else {
+                    dbg("Failed to extract certificates; returning empty list")
+                    result["certCommonNames"] = []
+                }
+            default:
+                var other = result["other_blobs"] as? [String: String] ?? [:]
+                other[String(format: "0x%08x", blobMagic)] = blobBase64
+                result["other_blobs"] = other
             }
         }
         
@@ -296,8 +469,8 @@ public class CodeSigAndEntitlement {
     ///   - csSize: The size of the LC_CODE_SIGNATURE blob
     ///   - isBigEndian: Whether the Mach-O file uses big-endian formatting
     /// - Returns: A dictionary with code signing information, including codedirectory, entitlements, and CMS blob if available.
-    public static func extractCodeSignatureInfo(from fileData: Data, csOffset: Int, csSize: Int, isBigEndian: Bool) throws -> [String: Any] {
-        let csInfo = try CodeSignatureParser.parseCodeSignature(from: fileData, at: csOffset, size: csSize, isBigEndian: isBigEndian)
-        return csInfo
+    public static func extractCodeSignatureInfo(from fileData: Data, csOffset: Int, csSize: Int) throws -> [String: Any] {
+        // fileData is already a single-arch slice; always use big-endian for code signature parsing
+        return try CodeSignatureParser.parseCodeSignature(from: fileData, at: csOffset, size: csSize, isBigEndian: true)
     }
 }

@@ -50,6 +50,12 @@ public class SegmentSectionParser {
         let initprot = readInt32(from: fileData, at: offset + 60, isBigEndian: isBigEndian)
         let nsects = readUInt32(from: fileData, at: offset + 64, isBigEndian: isBigEndian)
         let flags = readUInt32(from: fileData, at: offset + 68, isBigEndian: isBigEndian)
+
+        // Debug helper
+        let dbg: (String) -> Void = { msg in
+            if DebugConfig.isEnabled { print("[SegmentSectionParser] \(msg)") }
+        }
+        dbg("Parsing segment '\(segname)' at offset \(offset): vmaddr=0x\(String(format: "%016x", vmaddr)), vmsize=\(vmsize), fileoff=\(fileoff), filesize=\(filesize), nsects=\(nsects), flags=0x\(String(format: "%08x", flags))")
         
         var segmentDict: [String: Any] = [
             "segname": segname,
@@ -101,6 +107,9 @@ public class SegmentSectionParser {
             ]
             sections.append(sectionDict)
             
+            // Debug log
+            dbg(" Section \(i): sectname='\(sectname)', segname='\(segnameSection)', addr=0x\(String(format: "%016x", addr)), size=\(size), offset=\(offsetField), align=\(align), flags=0x\(String(format: "%08x", sectFlags))")
+            
             sectionOffset += sectionSize
         }
         
@@ -108,4 +117,3 @@ public class SegmentSectionParser {
         return segmentDict
     }
 }
-
