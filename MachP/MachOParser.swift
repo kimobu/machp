@@ -38,7 +38,8 @@ class MachOParser {
             "filePath": filePath,
             "includeRaw": includeRaw,
             "recursive": recursive,
-            "fileSize": fileData.count
+            "fileSize": fileData.count,
+            "entropy": fileData.entropy()
         ]
         
         // Make sure we can at least read the magic
@@ -79,6 +80,7 @@ class MachOParser {
                 .compactMap { String(format: "%02x", $0) }
                 .joined()
             sliceInfo["sha256"] = sha256
+            sliceInfo["entropy"] = sliceData.entropy()
             
             // ---------- Header ----------
             var headerInfo = try HeaderParser.parseMachOHeader(from: sliceData, at: headerOffsetInSlice)

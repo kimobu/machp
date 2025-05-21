@@ -68,6 +68,13 @@ public class SegmentSectionParser {
             "nsects": nsects,
             "flags": flags
         ]
+
+        if filesize > 0 && Int(fileoff) + Int(filesize) <= fileData.count {
+            let start = Int(fileoff)
+            let end = start + Int(filesize)
+            let segData = fileData.subdata(in: start..<end)
+            segmentDict["entropy"] = segData.entropy()
+        }
         
         var sections: [[String: Any]] = []
         // Sections start immediately after the LC_SEGMENT_64 command (72 bytes into the command)
