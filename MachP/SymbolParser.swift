@@ -16,7 +16,7 @@ public class SymbolParser {
     }
 
     /// Parses the complete symbol table (LC_SYMTAB) and dynamic symbol table
-    /// (LC_DYSYMTAB) returning base64 encoded symbol names along with table
+    /// (LC_DYSYMTAB) returning symbol names along with table
     /// metadata.
     public static func parseSymbolTables(from fileData: Data,
                                          loadCommands: [[String: Any]],
@@ -45,8 +45,11 @@ public class SymbolParser {
                         nameData.append(c)
                         idx += 1
                     }
-                    let name = Data(nameData)
-                    entries.append(name.base64EncodedString())
+                    if let name = String(bytes: nameData, encoding: .utf8) {
+                        entries.append(name)
+                    } else {
+                        entries.append("")
+                    }
                 } else {
                     entries.append("")
                 }
