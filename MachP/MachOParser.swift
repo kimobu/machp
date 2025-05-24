@@ -44,6 +44,9 @@ class MachOParser {
 
         // Accumulate imported symbols from all slices
         var allImportedSymbols: Set<String> = []
+        // Accumulate dylibs referenced by all slices (unique by name)
+        var allDylibs: [[String: Any]] = []
+        var seenDylibNames: Set<String> = []
         
         // Make sure we can at least read the magic
         guard fileData.count >= 4 else {
@@ -100,6 +103,18 @@ class MachOParser {
                     isBigEndian: isBigEndianSlice
                 )
                 headerInfo["loadCommands"] = loadCommands
+
+                // Extract referenced dylibs from load commands
+                let dylibs = DylibParser.extractDylibs(from: loadCommands)
+                if !dylibs.isEmpty {
+                    sliceInfo["dylibs"] = dylibs
+                    for dylib in dylibs {
+                        if let name = dylib["name"] as? String, !seenDylibNames.contains(name) {
+                            allDylibs.append(dylib)
+                            seenDylibNames.insert(name)
+                        }
+                    }
+                }
 
                 // Parse imported symbols from the symbol table if present
                 let imported = SymbolParser.parseImportedSymbols(
@@ -241,6 +256,11 @@ class MachOParser {
         // Attach aggregated imported symbols
         if !allImportedSymbols.isEmpty {
             result["importedSymbols"] = Array(allImportedSymbols).sorted()
+        }
+
+        // Attach aggregated dylibs
+        if !allDylibs.isEmpty {
+            result["dylibs"] = allDylibs
         }
 
         // Placeholder for recursive handling
