@@ -44,9 +44,14 @@ class MachOParser {
 
         // Accumulate imported symbols from all slices
         var allImportedSymbols: Set<String> = []
+
         // Accumulate dylibs referenced by all slices (unique by name)
         var allDylibs: [[String: Any]] = []
         var seenDylibNames: Set<String> = []
+
+        // Accumulate exported symbols from all slices
+        var allExportedSymbols: Set<String> = []
+
         
         // Make sure we can at least read the magic
         guard fileData.count >= 4 else {
@@ -125,6 +130,30 @@ class MachOParser {
                 if let importedSymbols = imported["importedSymbols"] as? [String], !importedSymbols.isEmpty {
                     sliceInfo["importedSymbols"] = importedSymbols
                     sliceInfo["numImportedSymbols"] = imported["numImportedSymbols"]
+                }
+
+
+                // Parse symbol and dynamic symbol tables
+                let symData = SymbolParser.parseSymbolTables(
+
+                // Parse exported symbols from the symbol table if present
+                let exported = SymbolParser.parseExportedSymbols(
+
+                    from: sliceData,
+                    loadCommands: loadCommands,
+                    isBigEndian: isBigEndianSlice
+                )
+
+                if let symtab = symData["symtab"] {
+                    sliceInfo["symtab"] = symtab
+                }
+                if let dysymtab = symData["dysymtab"] {
+                    sliceInfo["dysymtab"] = dysymtab
+
+                if let exportSyms = exported["exports"] as? [String], !exportSyms.isEmpty {
+                    sliceInfo["exports"] = exportSyms
+                    sliceInfo["numExports"] = exported["numExports"]
+
                 }
                 
                 // ---------- Segments / Code‑sig ----------
@@ -229,6 +258,9 @@ class MachOParser {
                     if let syms = sliceDict["importedSymbols"] as? [String] {
                         allImportedSymbols.formUnion(syms)
                     }
+                    if let exps = sliceDict["exports"] as? [String] {
+                        allExportedSymbols.formUnion(exps)
+                    }
                     slices.append(sliceDict)
                 } else {
                     dbg("Skipping non‑64‑bit slice \(i)")
@@ -243,11 +275,14 @@ class MachOParser {
         } else if magic == MH_MAGIC_64 || magic == MH_CIGAM_64 {
             dbg("Detected thin 64‑bit Mach‑O")
             result["fat"]         = false
-            let imported = try parseMachOSlice(sliceOffset: 0, sliceSize: fileData.count)
-            if let syms = imported["importedSymbols"] as? [String] {
+            let sliceInfo = try parseMachOSlice(sliceOffset: 0, sliceSize: fileData.count)
+            if let syms = sliceInfo["importedSymbols"] as? [String] {
                 allImportedSymbols.formUnion(syms)
             }
-            result["headerSlice"] = imported
+            if let exps = sliceInfo["exports"] as? [String] {
+                allExportedSymbols.formUnion(exps)
+            }
+            result["headerSlice"] = sliceInfo
             result["parsed"]      = true
         } else {
             throw MachOParsingError.invalidFormat("Unrecognized Mach‑O / fat header")
@@ -256,6 +291,10 @@ class MachOParser {
         // Attach aggregated imported symbols
         if !allImportedSymbols.isEmpty {
             result["importedSymbols"] = Array(allImportedSymbols).sorted()
+        }
+        // Attach aggregated exported symbols
+        if !allExportedSymbols.isEmpty {
+            result["exports"] = Array(allExportedSymbols).sorted()
         }
 
         // Attach aggregated dylibs
