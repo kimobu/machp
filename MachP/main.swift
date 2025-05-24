@@ -16,7 +16,7 @@ struct CLIOptions {
 
 // Function to parse the command-line arguments and return CLIOptions
 func parseArguments() -> CLIOptions? {
-    let usage = "Usage: MachP <file_path> [--include-raw] [--recursive] [--output <path>]"
+    let usage = "Usage: MachP <file_path> [--include-raw] [--recursive|-r] [--output <path>]"
     let args = CommandLine.arguments
     guard args.count >= 2 else {
         print(usage)
@@ -32,7 +32,7 @@ func parseArguments() -> CLIOptions? {
         switch arg {
         case "--include-raw":
             options.includeRaw = true
-        case "--recursive":
+        case "--recursive", "-r":
             options.recursive = true
         case "--debug":
             options.debug = true
@@ -54,6 +54,54 @@ func parseArguments() -> CLIOptions? {
     return options
 }
 
+// Helper to recursively collect files from a path
+func collectFiles(at path: String) -> [String] {
+    var isDir: ObjCBool = false
+    let fm = FileManager.default
+    if fm.fileExists(atPath: path, isDirectory: &isDir) {
+        if !isDir.boolValue { return [path] }
+
+        var files: [String] = []
+        if let enumerator = fm.enumerator(atPath: path) {
+            for case let file as String in enumerator {
+                let full = (path as NSString).appendingPathComponent(file)
+                var subDir: ObjCBool = false
+                if fm.fileExists(atPath: full, isDirectory: &subDir), !subDir.boolValue {
+                    files.append(full)
+                }
+            }
+        }
+        return files
+    }
+    return []
+}
+
+// Parse multiple files concurrently
+func parseFiles(_ files: [String], with options: CLIOptions) {
+    let group = DispatchGroup()
+    let queue = DispatchQueue(label: "machp.parse", attributes: .concurrent)
+    for file in files {
+        group.enter()
+        queue.async {
+            defer { group.leave() }
+            do {
+                let jsonOutput = try MachOParser.parseFile(
+                    at: file,
+                    includeRaw: options.includeRaw,
+                    recursive: false,
+                    outputPath: options.outputPath
+                )
+                if options.outputPath == nil {
+                    print(jsonOutput)
+                }
+            } catch {
+                fputs("Error parsing file \(file): \(error)\n", stderr)
+            }
+        }
+    }
+    group.wait()
+}
+
 // Main entry point
 guard let options = parseArguments() else {
     exit(1)
@@ -72,20 +120,26 @@ if options.debug {
     DebugConfig.isEnabled = options.debug
 }
 
-// Call the Mach-O parser. Assume MachOParser is implemented elsewhere in the project.
-// The parseFile method is expected to return a JSON string representation of the parsed file.
-do {
-    let jsonOutput = try MachOParser.parseFile(
-            at: options.filePath,
-            includeRaw: options.includeRaw,
-            recursive: options.recursive,
-            outputPath: options.outputPath
-        )
-        // If the user didn’t supply --output, print to stdout
-        if options.outputPath == nil {
-            print(jsonOutput)
-        }
-} catch {
-    print("Error parsing file: \(error)")
-    exit(1)
+if options.recursive {
+    let files = collectFiles(at: options.filePath)
+    if files.isEmpty {
+        print("No files found to parse")
+        exit(1)
+    }
+    parseFiles(files, with: options)
+} else {
+    do {
+        let jsonOutput = try MachOParser.parseFile(
+                at: options.filePath,
+                includeRaw: options.includeRaw,
+                recursive: false,
+                outputPath: options.outputPath
+            )
+            if options.outputPath == nil {
+                print(jsonOutput)
+            }
+    } catch {
+        print("Error parsing file: \(error)")
+        exit(1)
+    }
 }
