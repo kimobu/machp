@@ -32,7 +32,7 @@ class MachOParser {
         let MH_CIGAM_64: UInt32  = 0xcffaedfe
         let CPU_ARCH_ABI64: UInt32 = 0x01000000
         let LC_CODE_SIGNATURE: UInt32 = 0x1d
-        
+
         // Base output dictionary
         var result: [String: Any] = [
             "filePath": filePath,
@@ -41,6 +41,9 @@ class MachOParser {
             "fileSize": fileData.count,
             "entropy": fileData.entropy()
         ]
+
+        // Accumulate imported symbols from all slices
+        var allImportedSymbols: Set<String> = []
         
         // Make sure we can at least read the magic
         guard fileData.count >= 4 else {
@@ -97,6 +100,16 @@ class MachOParser {
                     isBigEndian: isBigEndianSlice
                 )
                 headerInfo["loadCommands"] = loadCommands
+
+                // Parse imported symbols from the symbol table if present
+                let imported = SymbolParser.parseImportedSymbols(
+                    from: sliceData,
+                    loadCommands: loadCommands,
+                    isBigEndian: isBigEndianSlice
+                )
+                if !imported.isEmpty {
+                    sliceInfo["importedSymbols"] = imported
+                }
                 
                 // ---------- Segments / Code‑sig ----------
                 var segments: [[String: Any]] = []
@@ -197,6 +210,9 @@ class MachOParser {
                     sliceDict["cputype"]    = cputype
                     sliceDict["cpusubtype"] = cpusubtype
                     sliceDict["align"]      = align
+                    if let syms = sliceDict["importedSymbols"] as? [String] {
+                        allImportedSymbols.formUnion(syms)
+                    }
                     slices.append(sliceDict)
                 } else {
                     dbg("Skipping non‑64‑bit slice \(i)")
@@ -211,12 +227,21 @@ class MachOParser {
         } else if magic == MH_MAGIC_64 || magic == MH_CIGAM_64 {
             dbg("Detected thin 64‑bit Mach‑O")
             result["fat"]         = false
-            result["headerSlice"] = try parseMachOSlice(sliceOffset: 0, sliceSize: fileData.count)
+            var sliceInfo = try parseMachOSlice(sliceOffset: 0, sliceSize: fileData.count)
+            if let syms = sliceInfo["importedSymbols"] as? [String] {
+                allImportedSymbols.formUnion(syms)
+            }
+            result["headerSlice"] = sliceInfo
             result["parsed"]      = true
         } else {
             throw MachOParsingError.invalidFormat("Unrecognized Mach‑O / fat header")
         }
         
+        // Attach aggregated imported symbols
+        if !allImportedSymbols.isEmpty {
+            result["importedSymbols"] = Array(allImportedSymbols).sorted()
+        }
+
         // Placeholder for recursive handling
         if recursive { result["filesParsed"] = [] }
 
