@@ -20,16 +20,16 @@ public class SymbolParser {
     ///   - fileData: Slice data starting at offset 0 of the Mach-O image.
     ///   - loadCommands: Load commands dictionary array parsed for this slice.
     ///   - isBigEndian: Indicates if the slice uses big-endian byte order.
-    /// - Returns: Array of symbol names that are imported by this slice.
+    /// - Returns: Dictionary with keys "importedSymbols" (array of symbol names) and "numImportedSymbols" (count).
     public static func parseImportedSymbols(from fileData: Data,
                                             loadCommands: [[String: Any]],
-                                            isBigEndian: Bool) -> [String] {
+                                            isBigEndian: Bool) -> [String: Any] {
         guard let symtab = loadCommands.first(where: { ($0["type"] as? String) == "LC_SYMTAB" }),
               let symoff = symtab["symoff"] as? UInt32,
               let nsyms  = symtab["nsyms"]  as? UInt32,
               let stroff = symtab["stroff"] as? UInt32,
               let strsize = symtab["strsize"] as? UInt32 else {
-            return []
+            return ["importedSymbols": [], "numImportedSymbols": 0]
         }
 
         var imported: [String] = []
@@ -63,7 +63,6 @@ public class SymbolParser {
             }
         }
 
-        return imported
+        return ["importedSymbols": imported, "numImportedSymbols": imported.count]
     }
 }
-

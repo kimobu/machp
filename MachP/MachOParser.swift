@@ -107,8 +107,9 @@ class MachOParser {
                     loadCommands: loadCommands,
                     isBigEndian: isBigEndianSlice
                 )
-                if !imported.isEmpty {
-                    sliceInfo["importedSymbols"] = imported
+                if let importedSymbols = imported["importedSymbols"] as? [String], !importedSymbols.isEmpty {
+                    sliceInfo["importedSymbols"] = importedSymbols
+                    sliceInfo["numImportedSymbols"] = imported["numImportedSymbols"]
                 }
                 
                 // ---------- Segments / Code‑sig ----------
@@ -227,11 +228,11 @@ class MachOParser {
         } else if magic == MH_MAGIC_64 || magic == MH_CIGAM_64 {
             dbg("Detected thin 64‑bit Mach‑O")
             result["fat"]         = false
-            var sliceInfo = try parseMachOSlice(sliceOffset: 0, sliceSize: fileData.count)
-            if let syms = sliceInfo["importedSymbols"] as? [String] {
+            let imported = try parseMachOSlice(sliceOffset: 0, sliceSize: fileData.count)
+            if let syms = imported["importedSymbols"] as? [String] {
                 allImportedSymbols.formUnion(syms)
             }
-            result["headerSlice"] = sliceInfo
+            result["headerSlice"] = imported
             result["parsed"]      = true
         } else {
             throw MachOParsingError.invalidFormat("Unrecognized Mach‑O / fat header")
