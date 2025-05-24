@@ -111,6 +111,19 @@ class MachOParser {
                     sliceInfo["importedSymbols"] = importedSymbols
                     sliceInfo["numImportedSymbols"] = imported["numImportedSymbols"]
                 }
+
+                // Parse symbol and dynamic symbol tables
+                let symData = SymbolParser.parseSymbolTables(
+                    from: sliceData,
+                    loadCommands: loadCommands,
+                    isBigEndian: isBigEndianSlice
+                )
+                if let symtab = symData["symtab"] {
+                    sliceInfo["symtab"] = symtab
+                }
+                if let dysymtab = symData["dysymtab"] {
+                    sliceInfo["dysymtab"] = dysymtab
+                }
                 
                 // ---------- Segments / Code‑sig ----------
                 var segments: [[String: Any]] = []
