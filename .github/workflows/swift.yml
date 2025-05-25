@@ -21,7 +21,7 @@ jobs:
       with:
         swift-version: "6.1.0"
     - name: Build
-      run: swift build -v
+      run: swift build -c release -v
     - name: Run tests
       run: swift test -v
     - name: Prepare binary for release
