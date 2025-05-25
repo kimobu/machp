@@ -13,7 +13,6 @@ private let logger = LoggerFactory.make("com.machp.MachOParser")
 class MachOParser {
     
     static func parseFile(at filePath: String,
-                          includeRaw: Bool,
                           recursive: Bool,
                           outputPath: String? = nil,
     ) throws -> String {
@@ -34,7 +33,6 @@ class MachOParser {
         // Base output dictionary
         var result: [String: Any] = [
             "filePath": filePath,
-            "includeRaw": includeRaw,
             "recursive": recursive,
             "fileSize": fileData.count,
             "entropy": fileData.entropy()
@@ -195,15 +193,6 @@ class MachOParser {
                 
                 sliceInfo["header"] = headerInfo
                 
-                // ---------- Raw Data (optional) ----------
-                if includeRaw {
-                    let sliceEnd = sliceOffset + sliceSize
-                    if sliceEnd <= fileData.count {
-                        sliceInfo["rawDataBase64"] = sliceData.base64EncodedString()
-                    } else {
-                        sliceInfo["rawDataError"] = "Slice extends beyond file size"
-                    }
-                }
                 return sliceInfo
             }
             // Fallback return to satisfy all paths
@@ -320,7 +309,6 @@ class MachOParser {
                 guard let offset = slice["offset"] as? Int,
                       let size = slice["size"] as? Int else { continue }
                 // Extract raw Mach-O bytes for this slice
-                let rawMachOData = fileData.subdata(in: offset..<offset+size)
                 // Use precomputed hash from slice info
                 guard let hash = slice["sha256"] as? String else { continue }
                 
