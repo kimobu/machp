@@ -1,9 +1,5 @@
-/// Global debug flag for the application and parsers
-enum DebugConfig {
-    static var isEnabled: Bool = false
-}
-
 import Foundation
+import Logging
 
 // A structure to hold command-line options
 struct CLIOptions {
@@ -89,7 +85,8 @@ func parseFiles(_ files: [String], with options: CLIOptions) {
                     at: file,
                     includeRaw: options.includeRaw,
                     recursive: false,
-                    outputPath: options.outputPath
+                    outputPath: options.outputPath,
+                    debugEnabled: options.debug
                 )
                 if options.outputPath == nil {
                     print(jsonOutput)
@@ -116,8 +113,6 @@ if options.recursive {
 }
 if options.debug {
     print("Debug logging enabled.")
-    // Enable global debug
-    DebugConfig.isEnabled = options.debug
 }
 
 if options.recursive {
@@ -133,7 +128,8 @@ if options.recursive {
                 at: options.filePath,
                 includeRaw: options.includeRaw,
                 recursive: false,
-                outputPath: options.outputPath
+                outputPath: options.outputPath,
+                debugEnabled: options.debug
             )
             if options.outputPath == nil {
                 print(jsonOutput)

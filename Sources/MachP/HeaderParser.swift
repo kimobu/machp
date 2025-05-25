@@ -9,10 +9,10 @@ import Foundation
 public struct HeaderParser {
     static let headerSize: Int = 32 // Size of mach_header_64 is 32 bytes
 
-    public static func parseMachOHeader(from fileData: Data, at offset: Int) throws -> [String: Any] {
+    public static func parseMachOHeader(from fileData: Data, at offset: Int, debugEnabled: Bool) throws -> [String: Any] {
         // Debug helper
         let dbg: (String) -> Void = { msg in
-            if DebugConfig.isEnabled { print("[HeaderParser] \(msg)") }
+            if debugEnabled { print("[HeaderParser] \(msg)") }
         }
         dbg("Starting parseMachOHeader at offset \(offset), fileSize=\(fileData.count)")
 

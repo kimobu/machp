@@ -34,7 +34,7 @@ public class SegmentSectionParser {
     ///   - offset: The offset where the LC_SEGMENT_64 command starts
     ///   - isBigEndian: Whether the data is in big-endian format
     /// - Returns: A dictionary representing the segment and an array of its parsed sections
-    public static func parseSegmentAndSections(from fileData: Data, at offset: Int, isBigEndian: Bool) throws -> [String: Any] {
+    public static func parseSegmentAndSections(from fileData: Data, at offset: Int, isBigEndian: Bool, debugEnabled: Bool) throws -> [String: Any] {
         // Ensure sufficient data for LC_SEGMENT_64 command
         guard fileData.count >= offset + segmentCommandSize else {
             throw MachOParsingError.parsingFailed("Incomplete LC_SEGMENT_64 command at offset \(offset)")
@@ -53,7 +53,7 @@ public class SegmentSectionParser {
 
         // Debug helper
         let dbg: (String) -> Void = { msg in
-            if DebugConfig.isEnabled { print("[SegmentSectionParser] \(msg)") }
+            if debugEnabled { print("[SegmentSectionParser] \(msg)") }
         }
         dbg("Parsing segment '\(segname)' at offset \(offset): vmaddr=0x\(String(format: "%016x", vmaddr)), vmsize=\(vmsize), fileoff=\(fileoff), filesize=\(filesize), nsects=\(nsects), flags=0x\(String(format: "%08x", flags))")
         

@@ -11,10 +11,10 @@ public class LoadCommandParser {
     ///   - ncmds: The number of load commands to parse.
     ///   - isBigEndian: A flag indicating whether the file uses big-endian byte order.
     /// - Returns: An array of dictionaries where each dictionary represents a parsed load command.
-    public static func parseLoadCommands(from fileData: Data, offset: Int, ncmds: UInt32, isBigEndian: Bool) throws -> [[String: Any]] {
+    public static func parseLoadCommands(from fileData: Data, offset: Int, ncmds: UInt32, isBigEndian: Bool, debugEnabled: Bool) throws -> [[String: Any]] {
         // Debug helper
         let dbg: (String) -> Void = { msg in
-            if DebugConfig.isEnabled { print("[LoadCommandParser] \(msg)") }
+            if debugEnabled { print("[LoadCommandParser] \(msg)") }
         }
         dbg("Starting parseLoadCommands at offset \(offset), ncmds \(ncmds), bigEndian=\(isBigEndian)")
         var loadCommands: [[String: Any]] = []

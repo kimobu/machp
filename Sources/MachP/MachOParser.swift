@@ -13,7 +13,9 @@ class MachOParser {
     static func parseFile(at filePath: String,
                           includeRaw: Bool,
                           recursive: Bool,
-                          outputPath: String? = nil) throws -> String {
+                          outputPath: String? = nil,
+                          debugEnabled: Bool,
+    ) throws -> String {
         let fileURL = URL(fileURLWithPath: filePath)
         guard FileManager.default.fileExists(atPath: filePath) else {
             throw MachOParsingError.fileNotFound
@@ -22,7 +24,7 @@ class MachOParser {
         
         // Simple debug helper
         let dbg: (String) -> Void = { msg in
-            if DebugConfig.isEnabled { print("[MachOParser] \(msg)") }
+            if debugEnabled { print("[MachOParser] \(msg)") }
         }
         
         // Magic numbers & constants
@@ -94,7 +96,7 @@ class MachOParser {
             sliceInfo["entropy"] = sliceData.entropy()
             
             // ---------- Header ----------
-            var headerInfo = try HeaderParser.parseMachOHeader(from: sliceData, at: headerOffsetInSlice)
+            var headerInfo = try HeaderParser.parseMachOHeader(from: sliceData, at: headerOffsetInSlice, debugEnabled: debugEnabled)
             let magicStr = (headerInfo["magic"] as? String ?? "").lowercased()
             let isBigEndianSlice = magicStr == "0xcffaedfe"
             
@@ -105,7 +107,8 @@ class MachOParser {
                     from: sliceData,
                     offset: lcOffset,
                     ncmds: ncmds,
-                    isBigEndian: isBigEndianSlice
+                    isBigEndian: isBigEndianSlice,
+                    debugEnabled: debugEnabled
                 )
                 headerInfo["loadCommands"] = loadCommands
                 
@@ -174,7 +177,8 @@ class MachOParser {
                             let seg = try SegmentSectionParser.parseSegmentAndSections(
                                 from: sliceData,
                                 at: cmdOffset,
-                                isBigEndian: isBigEndianSlice
+                                isBigEndian: isBigEndianSlice,
+                                debugEnabled: debugEnabled
                             )
                             segments.append(seg)
                         } else if cmd == LC_CODE_SIGNATURE {
