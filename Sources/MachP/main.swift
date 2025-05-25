@@ -3,7 +3,6 @@ import Logging
 
 // A structure to hold command-line options
 struct CLIOptions {
-    var includeRaw: Bool = false
     var recursive: Bool = false
     var filePath: String = ""
     var debug: Bool = false
@@ -11,9 +10,9 @@ struct CLIOptions {
 }
 
 // Function to parse the command-line arguments and return CLIOptions
-func parseArguments() -> CLIOptions? {
+func parseArguments(from arguments: [String]) -> CLIOptions? {
     let usage = "Usage: MachP <file_path> [--include-raw] [--recursive|-r] [--output <path>]"
-    let args = CommandLine.arguments
+    let args = arguments
     guard args.count >= 2 else {
         print(usage)
         return nil
@@ -26,8 +25,6 @@ func parseArguments() -> CLIOptions? {
     var iterator = args.dropFirst(2).makeIterator()
     while let arg = iterator.next() {
         switch arg {
-        case "--include-raw":
-            options.includeRaw = true
         case "--recursive", "-r":
             options.recursive = true
         case "--debug":
@@ -83,7 +80,6 @@ func parseFiles(_ files: [String], with options: CLIOptions) {
             do {
                 let jsonOutput = try MachOParser.parseFile(
                     at: file,
-                    includeRaw: options.includeRaw,
                     recursive: false,
                     outputPath: options.outputPath,
                 )
@@ -99,7 +95,7 @@ func parseFiles(_ files: [String], with options: CLIOptions) {
 }
 
 // Main entry point
-guard let options = parseArguments() else {
+guard let options = parseArguments(from: CommandLine.arguments) else {
     exit(1)
 }
 
@@ -128,7 +124,6 @@ if options.recursive {
     do {
         let jsonOutput = try MachOParser.parseFile(
                 at: options.filePath,
-                includeRaw: options.includeRaw,
                 recursive: false,
                 outputPath: options.outputPath
             )
