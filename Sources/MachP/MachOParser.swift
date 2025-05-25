@@ -1,5 +1,5 @@
 import Foundation
-import CryptoKit
+import Crypto
 
 enum MachOParsingError: Error {
     case fileNotFound
