@@ -6,6 +6,7 @@ name: Swift
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main" ]
 
@@ -23,3 +24,18 @@ jobs:
       run: swift build -v
     - name: Run tests
       run: swift test -v
+    - name: Prepare binary for release
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        mkdir -p release
+        cp .build/release/MachP release/
+        cd release
+        zip MachP.zip MachP
+
+    - name: Create GitHub Release
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: release/MachP.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
