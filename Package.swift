@@ -21,6 +21,10 @@ let package = Package(
                         .product(name: "Logging", package: "swift-log"),
                         .product(name: "Crypto", package: "swift-crypto")
                     ],
-            path: "Sources/MachP")
+            path: "Sources/MachP"),
+        .testTarget(
+            name: "MachPTests",
+            dependencies: ["MachP"],
+            path: "Tests/MachPTests")
     ]
 )
