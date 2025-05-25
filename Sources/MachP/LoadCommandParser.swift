@@ -1,5 +1,7 @@
 import Foundation
 
+private let logger = LoggerFactory.make("com.machp.LoadCommandParser")
+
 // Extend or reuse MachOParsingError if needed
 // Assuming MachOParsingError is available in the project
 public class LoadCommandParser {
@@ -11,17 +13,14 @@ public class LoadCommandParser {
     ///   - ncmds: The number of load commands to parse.
     ///   - isBigEndian: A flag indicating whether the file uses big-endian byte order.
     /// - Returns: An array of dictionaries where each dictionary represents a parsed load command.
-    public static func parseLoadCommands(from fileData: Data, offset: Int, ncmds: UInt32, isBigEndian: Bool, debugEnabled: Bool) throws -> [[String: Any]] {
+    public static func parseLoadCommands(from fileData: Data, offset: Int, ncmds: UInt32, isBigEndian: Bool) throws -> [[String: Any]] {
         // Debug helper
-        let dbg: (String) -> Void = { msg in
-            if debugEnabled { print("[LoadCommandParser] \(msg)") }
-        }
-        dbg("Starting parseLoadCommands at offset \(offset), ncmds \(ncmds), bigEndian=\(isBigEndian)")
+        logger.debug("Starting parseLoadCommands at offset \(offset), ncmds \(ncmds), bigEndian=\(isBigEndian)")
         var loadCommands: [[String: Any]] = []
         var currentOffset = offset
 
         for _ in 0..<ncmds {
-            dbg("Parsing load command at offset \(currentOffset)")
+            logger.debug("Parsing load command at offset \(currentOffset)")
             // Each load command starts with two UInt32 fields: cmd and cmdsize
             guard fileData.count >= currentOffset + 8 else {
                 throw MachOParsingError.parsingFailed("Not enough data for load command at offset \(currentOffset)")
@@ -31,7 +30,7 @@ public class LoadCommandParser {
             let cmdsizeRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: currentOffset + 4, as: UInt32.self) }
             let cmd = isBigEndian ? UInt32(bigEndian: cmdRaw) : UInt32(littleEndian: cmdRaw)
             let cmdsize = isBigEndian ? UInt32(bigEndian: cmdsizeRaw) : UInt32(littleEndian: cmdsizeRaw)
-            dbg("  cmd=0x\(String(format: "%08x", cmd)), cmdsize=\(cmdsize)")
+            logger.debug("  cmd=0x\(String(format: "%08x", cmd)), cmdsize=\(cmdsize)")
 
             var loadCommand: [String: Any] = [
                 "cmd": String(format: "0x%08x", cmd),

@@ -20,6 +20,6 @@ let package = Package(
             dependencies: [
                         .product(name: "Logging", package: "swift-log")
                     ],
-            path: "Sources/MachP",)
+            path: "Sources/MachP")
     ]
 )
