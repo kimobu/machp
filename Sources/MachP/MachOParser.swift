@@ -8,22 +8,20 @@ enum MachOParsingError: Error {
     case parsingFailed(String)
 }
 
+private let logger = LoggerFactory.make("com.machp.MachOParser")
+
 class MachOParser {
     
     static func parseFile(at filePath: String,
                           includeRaw: Bool,
                           recursive: Bool,
-                          outputPath: String? = nil) throws -> String {
+                          outputPath: String? = nil,
+    ) throws -> String {
         let fileURL = URL(fileURLWithPath: filePath)
         guard FileManager.default.fileExists(atPath: filePath) else {
             throw MachOParsingError.fileNotFound
         }
         let fileData = try Data(contentsOf: fileURL)
-        
-        // Simple debug helper
-        let dbg: (String) -> Void = { msg in
-            if DebugConfig.isEnabled { print("[MachOParser] \(msg)") }
-        }
         
         // Magic numbers & constants
         let FAT_MAGIC: UInt32    = 0xcafebabe
@@ -61,16 +59,16 @@ class MachOParser {
         // All fat headers are big‑endian, so interpret magic that way
         let rawMagic: UInt32 = fileData.withUnsafeBytes { $0.load(as: UInt32.self) }
         let magic: UInt32    = UInt32(bigEndian: rawMagic)
-        dbg("Top‑level magic: 0x\(String(format: "%08x", magic))")
+        ("Top‑level magic: 0x\(String(format: "%08x", magic))")
         
         // Unified slice parser
         func parseMachOSlice(sliceOffset: Int, sliceSize: Int) throws -> [String: Any] {
-            dbg("Parsing Mach‑O slice @\(sliceOffset) (\(sliceSize) bytes)")
+            logger.debug("Parsing Mach‑O slice @\(sliceOffset) (\(sliceSize) bytes)")
             let rawSliceMagic: UInt32 = fileData.withUnsafeBytes {
                 $0.load(fromByteOffset: sliceOffset, as: UInt32.self)
             }
             let sliceMagic: UInt32 = UInt32(bigEndian: rawSliceMagic)
-            dbg("Slice header magic: 0x\(String(format: "%08x", sliceMagic))")
+            logger.debug("Slice header magic: 0x\(String(format: "%08x", sliceMagic))")
             var sliceInfo: [String: Any] = [
                 "offset": sliceOffset,
                 "size": sliceSize
@@ -105,7 +103,7 @@ class MachOParser {
                     from: sliceData,
                     offset: lcOffset,
                     ncmds: ncmds,
-                    isBigEndian: isBigEndianSlice
+                    isBigEndian: isBigEndianSlice,
                 )
                 headerInfo["loadCommands"] = loadCommands
                 
@@ -182,7 +180,7 @@ class MachOParser {
                             let csSizeRaw: UInt32   = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 12, as: UInt32.self) }
                             let csOffset = isBigEndianSlice ? UInt32(bigEndian: csOffsetRaw) : UInt32(littleEndian: csOffsetRaw)
                             let csSize   = isBigEndianSlice ? UInt32(bigEndian: csSizeRaw)   : UInt32(littleEndian: csSizeRaw)
-                            dbg("Starting csOffset \(csOffset), size \(csSize)")
+                            logger.debug("Starting csOffset \(csOffset), size \(csSize)")
                             let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(
                                 from: sliceData,
                                 csOffset: Int(csOffset),
@@ -214,7 +212,7 @@ class MachOParser {
 
         // ---------- FAT or THIN ----------
         if magic == FAT_MAGIC || magic == FAT_MAGIC_64 {
-            dbg("Detected fat Mach‑O")
+            logger.debug("Detected fat Mach‑O")
             let is64Fat      = (magic == FAT_MAGIC_64)
             let fatArchSize  = is64Fat ? 32 : 20
             
@@ -224,7 +222,7 @@ class MachOParser {
             
             let nfatArchRaw: UInt32 = fileData.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
             let nfatArch            = UInt32(bigEndian: nfatArchRaw)
-            dbg("Number of architecture slices: \(nfatArch)")
+            logger.debug("Number of architecture slices: \(nfatArch)")
             
             var slices: [[String: Any]] = []
             for i in 0..<nfatArch {
@@ -254,7 +252,7 @@ class MachOParser {
                     align       = UInt32(bigEndian: fileData.withUnsafeBytes { $0.load(fromByteOffset: entryOffset + 16, as: UInt32.self) })
                 }
                 
-                dbg("Slice \(i): cputype=\(cputype) cpusubtype=\(cpusubtype) offset=\(sliceOffset) size=\(sliceSize)")
+                logger.debug("Slice \(i): cputype=\(cputype) cpusubtype=\(cpusubtype) offset=\(sliceOffset) size=\(sliceSize)")
                 
                 // Only handle 64‑bit slices for now
                 if (cputype & CPU_ARCH_ABI64) != 0 {
@@ -270,7 +268,7 @@ class MachOParser {
                     }
                     slices.append(sliceDict)
                 } else {
-                    dbg("Skipping non‑64‑bit slice \(i)")
+                    logger.debug("Skipping non‑64‑bit slice \(i)")
                 }
             }
             
@@ -280,7 +278,7 @@ class MachOParser {
             result["slices"]     = slices
             result["parsed"]     = true
         } else if magic == MH_MAGIC_64 || magic == MH_CIGAM_64 {
-            dbg("Detected thin 64‑bit Mach‑O")
+            logger.debug("Detected thin 64‑bit Mach‑O")
             result["fat"]         = false
             let sliceInfo = try parseMachOSlice(sliceOffset: 0, sliceSize: fileData.count)
             if let syms = sliceInfo["importedSymbols"] as? [String] {

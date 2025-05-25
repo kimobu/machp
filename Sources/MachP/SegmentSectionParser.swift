@@ -1,5 +1,7 @@
 import Foundation
 
+private let logger = LoggerFactory.make("com.machp.SegmentSectionParser")
+
 public class SegmentSectionParser {
     static let segmentCommandSize = 72  // Size of LC_SEGMENT_64 command before sections
     static let sectionSize = 80         // Size of each section_64 struct
@@ -51,11 +53,7 @@ public class SegmentSectionParser {
         let nsects = readUInt32(from: fileData, at: offset + 64, isBigEndian: isBigEndian)
         let flags = readUInt32(from: fileData, at: offset + 68, isBigEndian: isBigEndian)
 
-        // Debug helper
-        let dbg: (String) -> Void = { msg in
-            if DebugConfig.isEnabled { print("[SegmentSectionParser] \(msg)") }
-        }
-        dbg("Parsing segment '\(segname)' at offset \(offset): vmaddr=0x\(String(format: "%016x", vmaddr)), vmsize=\(vmsize), fileoff=\(fileoff), filesize=\(filesize), nsects=\(nsects), flags=0x\(String(format: "%08x", flags))")
+        logger.debug("Parsing segment '\(segname)' at offset \(offset): vmaddr=0x\(String(format: "%016x", vmaddr)), vmsize=\(vmsize), fileoff=\(fileoff), filesize=\(filesize), nsects=\(nsects), flags=0x\(String(format: "%08x", flags))")
         
         var segmentDict: [String: Any] = [
             "segname": segname,
@@ -115,7 +113,7 @@ public class SegmentSectionParser {
             sections.append(sectionDict)
             
             // Debug log
-            dbg(" Section \(i): sectname='\(sectname)', segname='\(segnameSection)', addr=0x\(String(format: "%016x", addr)), size=\(size), offset=\(offsetField), align=\(align), flags=0x\(String(format: "%08x", sectFlags))")
+            logger.debug(" Section \(i): sectname='\(sectname)', segname='\(segnameSection)', addr=0x\(String(format: "%016x", addr)), size=\(size), offset=\(offsetField), align=\(align), flags=0x\(String(format: "%08x", sectFlags))")
             
             sectionOffset += sectionSize
         }

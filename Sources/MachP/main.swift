@@ -1,9 +1,5 @@
-/// Global debug flag for the application and parsers
-enum DebugConfig {
-    static var isEnabled: Bool = false
-}
-
 import Foundation
+import Logging
 
 // A structure to hold command-line options
 struct CLIOptions {
@@ -89,7 +85,7 @@ func parseFiles(_ files: [String], with options: CLIOptions) {
                     at: file,
                     includeRaw: options.includeRaw,
                     recursive: false,
-                    outputPath: options.outputPath
+                    outputPath: options.outputPath,
                 )
                 if options.outputPath == nil {
                     print(jsonOutput)
@@ -107,23 +103,24 @@ guard let options = parseArguments() else {
     exit(1)
 }
 
-print("Starting Mach-O parsing for file: \(options.filePath)")
-if options.includeRaw {
-    print("Raw data will be included in output.")
-}
-if options.recursive {
-    print("Recursive parsing is enabled.")
-}
+var debugEnabled = false
 if options.debug {
-    print("Debug logging enabled.")
-    // Enable global debug
-    DebugConfig.isEnabled = options.debug
+    debugEnabled = true
 }
+LoggerFactory.setup(debug: debugEnabled)
+private let logger = LoggerFactory.make("com.machp")
+
+print("Starting Mach-O parsing for file: \(options.filePath)")
+
+if options.recursive {
+    logger.debug("Recursive parsing is enabled.")
+}
+
 
 if options.recursive {
     let files = collectFiles(at: options.filePath)
     if files.isEmpty {
-        print("No files found to parse")
+        logger.error("No files found to parse")
         exit(1)
     }
     parseFiles(files, with: options)
@@ -136,10 +133,10 @@ if options.recursive {
                 outputPath: options.outputPath
             )
             if options.outputPath == nil {
-                print(jsonOutput)
+                logger.info("\(jsonOutput)")
             }
     } catch {
-        print("Error parsing file: \(error)")
+        logger.error("Error parsing file: \(error)")
         exit(1)
     }
 }

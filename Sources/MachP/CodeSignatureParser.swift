@@ -5,6 +5,8 @@ import Security
 @_silgen_name("SecCMSCertificatesOnlyMessageCopyCertificates")
 func SecCMSCertificatesOnlyMessageCopyCertificates(_ cms: CFData, _ error: UnsafeMutablePointer<Unmanaged<CFError>?>?) -> CFArray?
 
+private let logger = LoggerFactory.make("com.machp.CodeSignatureParser")
+
 // MARK: - CodeSignatureParser
 
 public class CodeSignatureParser {
@@ -19,12 +21,6 @@ public class CodeSignatureParser {
     static let CSMAGIC_EMBEDDED_SIGNATURE: UInt32  = 0xfade0cc0
     static let CSMAGIC_DETACHED_SIGNATURE: UInt32  = 0xfade0cc1
     
-    // Debug logging helper
-    private static func dbg(_ msg: String) {
-        if DebugConfig.isEnabled {
-            print("[CodeSignatureParser] \(msg)")
-        }
-    }
     
 
     private static func readUInt32(from data: Data, at offset: Int, bigEndian: Bool = true) throws -> UInt32 {
@@ -42,67 +38,67 @@ public class CodeSignatureParser {
     /// - Parameter cmsData: The CMS blob data.
     /// - Returns: An array of certificate common names if extraction is successful, otherwise nil.
     public static func extractCMSCertificates(from cmsData: Data) -> [String]? {
-    dbg("extractCMSCertificates called with data length \(cmsData.count)")
-    // Strip the 8-byte BlobHeader (magic + length)
-    guard cmsData.count > 8 else {
-        dbg("CMS data too short to strip header")
-        return nil
-    }
-    let derData = cmsData.subdata(in: 8..<cmsData.count)
-    dbg("Stripped header, DER data length: \(derData.count)")
-    
-    // Use CMSDecoder API to parse the PKCS#7 and extract certificates
-    var decoder: CMSDecoder?
-    var status = CMSDecoderCreate(&decoder)
-    guard status == errSecSuccess, let decoder = decoder else {
-        dbg("CMSDecoderCreate failed: \(status)")
-        return []
-    }
-    // Feed DER data to CMSDecoder
-    status = derData.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> OSStatus in
-        guard let baseAddress = buffer.baseAddress else {
-            return errSecParam
+        logger.debug("[CodeSignatureParser] extractCMSCertificates called with data length \(cmsData.count)")
+        // Strip the 8-byte BlobHeader (magic + length)
+        guard cmsData.count > 8 else {
+                logger.debug("[CodeSignatureParser] CMS data too short to strip header")
+            return nil
         }
-        return CMSDecoderUpdateMessage(decoder, baseAddress, derData.count)
-    }
-    guard status == errSecSuccess else {
-        dbg("CMSDecoderUpdateMessage failed: \(status)")
-        return []
-    }
-    status = CMSDecoderFinalizeMessage(decoder)
-    guard status == errSecSuccess else {
-        dbg("CMSDecoderFinalizeMessage failed: \(status)")
-        return []
-    }
-    var certsCF: CFArray?
-    status = CMSDecoderCopyAllCerts(decoder, &certsCF)
-    guard status == errSecSuccess, let certsArray = certsCF as? [SecCertificate] else {
-        dbg("CMSDecoderCopyAllCerts failed: \(status)")
-        return []
-    }
-    
-    dbg("Extracted \(certsArray.count) certificates via CMSDecoder")
-    var certificateNames: [String] = []
-    for cert in certsArray {
-        if let name = SecCertificateCopySubjectSummary(cert) as String? {
-            certificateNames.append(name)
+        let derData = cmsData.subdata(in: 8..<cmsData.count)
+        logger.debug("[CodeSignatureParser] Stripped header, DER data length: \(derData.count)")
+        
+        // Use CMSDecoder API to parse the PKCS#7 and extract certificates
+        var decoder: CMSDecoder?
+        var status = CMSDecoderCreate(&decoder)
+        guard status == errSecSuccess, let decoder = decoder else {
+            logger.debug("[CodeSignatureParser] CMSDecoderCreate failed: \(status)")
+            return []
         }
-    }
-    return certificateNames
+        // Feed DER data to CMSDecoder
+        status = derData.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> OSStatus in
+            guard let baseAddress = buffer.baseAddress else {
+                return errSecParam
+            }
+            return CMSDecoderUpdateMessage(decoder, baseAddress, derData.count)
+        }
+        guard status == errSecSuccess else {
+            logger.debug("[CodeSignatureParser] CMSDecoderUpdateMessage failed: \(status)")
+            return []
+        }
+        status = CMSDecoderFinalizeMessage(decoder)
+        guard status == errSecSuccess else {
+            logger.debug("[CodeSignatureParser] CMSDecoderFinalizeMessage failed: \(status)")
+            return []
+        }
+        var certsCF: CFArray?
+        status = CMSDecoderCopyAllCerts(decoder, &certsCF)
+        guard status == errSecSuccess, let certsArray = certsCF as? [SecCertificate] else {
+            logger.debug("[CodeSignatureParser] CMSDecoderCopyAllCerts failed: \(status)")
+            return []
+        }
+        
+        logger.debug("[CodeSignatureParser] Extracted \(certsArray.count) certificates via CMSDecoder")
+        var certificateNames: [String] = []
+        for cert in certsArray {
+            if let name = SecCertificateCopySubjectSummary(cert) as String? {
+                certificateNames.append(name)
+            }
+        }
+        return certificateNames
     }
     
     /// Extracts binary entitlements from a plist-encoded entitlement blob.
     /// - Parameter entitlementData: The entitlement blob data.
     /// - Returns: A dictionary where each entitlement key is mapped to true if present, otherwise nil if parsing fails.
     public static func extractEntitlements(from entitlementData: Data) -> [String]? {
-        dbg("extractEntitlements called with data length \(entitlementData.count)")
+        logger.debug("[CodeSignatureParser] extractEntitlements called with data length \(entitlementData.count)")
         // Skip the 8-byte BlobHeader (magic + length) to get the actual plist payload
         guard entitlementData.count > 8 else {
-            dbg("Entitlement data too short to strip header")
+            logger.debug("[CodeSignatureParser] Entitlement data too short to strip header")
             return nil
         }
         let plistData = entitlementData.subdata(in: 8..<entitlementData.count)
-        dbg("Stripped header, plistData length: \(plistData.count)")
+        logger.debug("[CodeSignatureParser] Stripped header, plistData length: \(plistData.count)")
         var format = PropertyListSerialization.PropertyListFormat.xml
         do {
             let plist = try PropertyListSerialization.propertyList(from: plistData, options: [], format: &format)
@@ -110,7 +106,7 @@ public class CodeSignatureParser {
                 return Array(dict.keys)
             }
         } catch {
-            dbg("Failed to parse entitlement plist: \(error)")
+            logger.error("[CodeSignatureParser] Failed to parse entitlement plist: \(error)")
         }
         return nil
     }
@@ -118,10 +114,10 @@ public class CodeSignatureParser {
     /// Parses DER-encoded entitlements (ASN.1-wrapped plist) and returns entitlement keys.
     /// Parses DER-encoded entitlements (ASN.1-wrapped plist) and returns entitlement keys.
     public static func extractEntitlementsDER(from derData: Data) -> [String]? {
-        dbg("extractEntitlementsDER called with data length \(derData.count)")
+        logger.error("[CodeSignatureParser] extractEntitlementsDER called with data length \(derData.count)")
         // Strip the 8-byte BlobHeader
         guard derData.count > 8 else {
-            dbg("DER entitlement data too short to strip header")
+            logger.warning("[CodeSignatureParser] DER entitlement data too short to strip header")
             return nil
         }
         let data = derData.subdata(in: 8..<derData.count)
@@ -199,18 +195,18 @@ public class CodeSignatureParser {
 
     /// Parses a code signing requirement blob into its string representation.
     public static func extractRequirements(from reqData: Data) -> String? {
-        dbg("extractRequirements called with data length \(reqData.count)")
+        logger.debug("[CodeSignatureParser] extractRequirements called with data length \(reqData.count)")
         // Strip the 8-byte BlobHeader
         guard reqData.count > 8 else {
-            dbg("Requirement data too short to strip header")
+            logger.warning("[CodeSignatureParser] Requirement data too short to strip header")
             return nil
         }
         let data = reqData.subdata(in: 8..<reqData.count)
-        dbg("Stripped header, requirement data length: \(data.count)")
+        logger.debug("[CodeSignatureParser] Stripped header, requirement data length: \(data.count)")
         var requirement: SecRequirement?
         let status = SecRequirementCreateWithData(data as CFData, SecCSFlags(), &requirement)
         if status != errSecSuccess || requirement == nil {
-            dbg("SecRequirementCreateWithData failed: \(status); falling back to ASCII extraction")
+            logger.warning("[CodeSignatureParser] SecRequirementCreateWithData failed: \(status); falling back to ASCII extraction")
             // Fallback: extract contiguous printable ASCII substrings of length >= 4
             var substrings: [String] = []
             var current = ""
@@ -234,11 +230,11 @@ public class CodeSignatureParser {
         var cfString: CFString? = nil
         let status2 = SecRequirementCopyString(req, SecCSFlags(), &cfString)
         guard status2 == errSecSuccess, let cfString = cfString else {
-            dbg("SecRequirementCopyString failed: \(status2)")
+            logger.warning("[CodeSignatureParser] SecRequirementCopyString failed: \(status2)")
             return nil
         }
         let str = cfString as String
-        dbg("Requirement string: \(str)")
+        logger.debug("[CodeSignatureParser] Requirement string: \(str)")
         return str
     }
     /// Parses a CodeDirectory blob and extracts key information.
@@ -355,10 +351,8 @@ public class CodeSignatureParser {
     /// - Returns: A dictionary containing extracted code signing blobs (codedirectory, entitlements, cms, etc.)
     public static func parseCodeSignature(from fileData: Data, at offset: Int, size: Int, isBigEndian: Bool) throws -> [String: Any] {
         // Debug helper
-        let dbg: (String) -> Void = { msg in
-            if DebugConfig.isEnabled { print("[CodeSignatureParser] \(msg)") }
-        }
-        dbg("Starting parseCodeSignature at offset \(offset), size \(size)")
+
+        logger.debug("Starting parseCodeSignature at offset \(offset), size \(size)")
 
         // Ensure there's enough data for the superblob header (12 bytes)
         guard fileData.count >= offset + 12 else {
@@ -402,7 +396,7 @@ public class CodeSignatureParser {
             // Read blob header: magic and length
             let blobMagic = try readUInt32(from: fileData, at: blobAbsoluteOffset, bigEndian: true)
             let blobLength = try readUInt32(from: fileData, at: blobAbsoluteOffset + 4, bigEndian: true)
-            dbg("Blob header at \(blobAbsoluteOffset): magic=0x\(String(format: "%08x", blobMagic)), length=\(blobLength)")
+            logger.debug("Blob header at \(blobAbsoluteOffset): magic=0x\(String(format: "%08x", blobMagic)), length=\(blobLength)")
             
             // Ensure the blob fits within the fileData
             guard fileData.count >= blobAbsoluteOffset + Int(blobLength) else {
@@ -439,11 +433,11 @@ public class CodeSignatureParser {
                 }
             case CSMAGIC_BLOBWRAPPER:
                 // Parse the CMS superblob to extract certificate common names
-                dbg("Parsing CMS blob for certificates")
+                logger.debug("[CodeSignatureParser] Parsing CMS blob for certificates")
                 if let certCNs = extractCMSCertificates(from: blobData) {
                     result["certCommonNames"] = certCNs
                 } else {
-                    dbg("Failed to extract certificates; returning empty list")
+                    logger.warning("[CodeSignatureParser] Failed to extract certificates; returning empty list")
                     result["certCommonNames"] = []
                 }
             default:
