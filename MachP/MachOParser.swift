@@ -32,7 +32,7 @@ class MachOParser {
         let MH_CIGAM_64: UInt32  = 0xcffaedfe
         let CPU_ARCH_ABI64: UInt32 = 0x01000000
         let LC_CODE_SIGNATURE: UInt32 = 0x1d
-
+        
         // Base output dictionary
         var result: [String: Any] = [
             "filePath": filePath,
@@ -41,17 +41,17 @@ class MachOParser {
             "fileSize": fileData.count,
             "entropy": fileData.entropy()
         ]
-
+        
         // Accumulate imported symbols from all slices
         var allImportedSymbols: Set<String> = []
-
+        
         // Accumulate dylibs referenced by all slices (unique by name)
         var allDylibs: [[String: Any]] = []
         var seenDylibNames: Set<String> = []
-
+        
         // Accumulate exported symbols from all slices
         var allExportedSymbols: Set<String> = []
-
+        
         
         // Make sure we can at least read the magic
         guard fileData.count >= 4 else {
@@ -85,7 +85,7 @@ class MachOParser {
             // Compute slice-relative header offset
             let headerOffsetAbsolute = sliceOffset
             let headerOffsetInSlice = headerOffsetAbsolute - sliceOffset
-
+            
             // Compute SHA-256 of raw slice bytes for output naming
             let sha256 = SHA256.hash(data: sliceData)
                 .compactMap { String(format: "%02x", $0) }
@@ -108,7 +108,7 @@ class MachOParser {
                     isBigEndian: isBigEndianSlice
                 )
                 headerInfo["loadCommands"] = loadCommands
-
+                
                 // Extract referenced dylibs from load commands
                 let dylibs = DylibParser.extractDylibs(from: loadCommands)
                 if !dylibs.isEmpty {
@@ -120,7 +120,7 @@ class MachOParser {
                         }
                     }
                 }
-
+                
                 // Parse imported symbols from the symbol table if present
                 let imported = SymbolParser.parseImportedSymbols(
                     from: sliceData,
@@ -131,80 +131,87 @@ class MachOParser {
                     sliceInfo["importedSymbols"] = importedSymbols
                     sliceInfo["numImportedSymbols"] = imported["numImportedSymbols"]
                 }
-
-
+                
+                
                 // Parse symbol and dynamic symbol tables
                 let symData = SymbolParser.parseSymbolTables(
-
-                // Parse exported symbols from the symbol table if present
-                let exported = SymbolParser.parseExportedSymbols(
-
                     from: sliceData,
                     loadCommands: loadCommands,
                     isBigEndian: isBigEndianSlice
                 )
-
+                
+                // Parse exported symbols from the symbol table if present
+                let exported = SymbolParser.parseExportedSymbols(
+                    
+                    from: sliceData,
+                    loadCommands: loadCommands,
+                    isBigEndian: isBigEndianSlice
+                )
+                
                 if let symtab = symData["symtab"] {
                     sliceInfo["symtab"] = symtab
                 }
                 if let dysymtab = symData["dysymtab"] {
                     sliceInfo["dysymtab"] = dysymtab
-
-                if let exportSyms = exported["exports"] as? [String], !exportSyms.isEmpty {
-                    sliceInfo["exports"] = exportSyms
-                    sliceInfo["numExports"] = exported["numExports"]
-
+                    
+                    if let exportSyms = exported["exports"] as? [String], !exportSyms.isEmpty {
+                        sliceInfo["exports"] = exportSyms
+                        sliceInfo["numExports"] = exported["numExports"]
+                        
+                    }
+                    
+                    // ---------- Segments / Code‑sig ----------
+                    var segments: [[String: Any]] = []
+                    var cmdOffset = lcOffset
+                    for _ in 0..<ncmds {
+                        let cmdRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset, as: UInt32.self) }
+                        let cmd = isBigEndianSlice ? UInt32(bigEndian: cmdRaw) : UInt32(littleEndian: cmdRaw)
+                        
+                        let cmdsizeRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 4, as: UInt32.self) }
+                        let cmdsize = isBigEndianSlice ? UInt32(bigEndian: cmdsizeRaw) : UInt32(littleEndian: cmdsizeRaw)
+                        
+                        if cmd == 0x19 { // LC_SEGMENT_64
+                            let seg = try SegmentSectionParser.parseSegmentAndSections(
+                                from: sliceData,
+                                at: cmdOffset,
+                                isBigEndian: isBigEndianSlice
+                            )
+                            segments.append(seg)
+                        } else if cmd == LC_CODE_SIGNATURE {
+                            let csOffsetRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 8, as: UInt32.self) }
+                            let csSizeRaw: UInt32   = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 12, as: UInt32.self) }
+                            let csOffset = isBigEndianSlice ? UInt32(bigEndian: csOffsetRaw) : UInt32(littleEndian: csOffsetRaw)
+                            let csSize   = isBigEndianSlice ? UInt32(bigEndian: csSizeRaw)   : UInt32(littleEndian: csSizeRaw)
+                            dbg("Starting csOffset \(csOffset), size \(csSize)")
+                            let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(
+                                from: sliceData,
+                                csOffset: Int(csOffset),
+                                csSize:   Int(csSize)
+                            )
+                            headerInfo["codeSignature"] = csInfo
+                        }
+                        cmdOffset += Int(cmdsize)
+                    }
+                    headerInfo["segments"] = segments
                 }
                 
-                // ---------- Segments / Code‑sig ----------
-                var segments: [[String: Any]] = []
-                var cmdOffset = lcOffset
-                for _ in 0..<ncmds {
-                    let cmdRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset, as: UInt32.self) }
-                    let cmd = isBigEndianSlice ? UInt32(bigEndian: cmdRaw) : UInt32(littleEndian: cmdRaw)
-                    
-                    let cmdsizeRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 4, as: UInt32.self) }
-                    let cmdsize = isBigEndianSlice ? UInt32(bigEndian: cmdsizeRaw) : UInt32(littleEndian: cmdsizeRaw)
-                    
-                    if cmd == 0x19 { // LC_SEGMENT_64
-                        let seg = try SegmentSectionParser.parseSegmentAndSections(
-                            from: sliceData,
-                            at: cmdOffset,
-                            isBigEndian: isBigEndianSlice
-                        )
-                        segments.append(seg)
-                    } else if cmd == LC_CODE_SIGNATURE {
-                        let csOffsetRaw: UInt32 = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 8, as: UInt32.self) }
-                        let csSizeRaw: UInt32   = sliceData.withUnsafeBytes { $0.load(fromByteOffset: cmdOffset + 12, as: UInt32.self) }
-                        let csOffset = isBigEndianSlice ? UInt32(bigEndian: csOffsetRaw) : UInt32(littleEndian: csOffsetRaw)
-                        let csSize   = isBigEndianSlice ? UInt32(bigEndian: csSizeRaw)   : UInt32(littleEndian: csSizeRaw)
-                        dbg("Starting csOffset \(csOffset), size \(csSize)")
-                        let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(
-                            from: sliceData,
-                            csOffset: Int(csOffset),
-                            csSize:   Int(csSize)
-                        )
-                        headerInfo["codeSignature"] = csInfo
+                sliceInfo["header"] = headerInfo
+                
+                // ---------- Raw Data (optional) ----------
+                if includeRaw {
+                    let sliceEnd = sliceOffset + sliceSize
+                    if sliceEnd <= fileData.count {
+                        sliceInfo["rawDataBase64"] = sliceData.base64EncodedString()
+                    } else {
+                        sliceInfo["rawDataError"] = "Slice extends beyond file size"
                     }
-                    cmdOffset += Int(cmdsize)
                 }
-                headerInfo["segments"] = segments
+                return sliceInfo
             }
-            
-            sliceInfo["header"] = headerInfo
-            
-            // ---------- Raw Data (optional) ----------
-            if includeRaw {
-                let sliceEnd = sliceOffset + sliceSize
-                if sliceEnd <= fileData.count {
-                    sliceInfo["rawDataBase64"] = sliceData.base64EncodedString()
-                } else {
-                    sliceInfo["rawDataError"] = "Slice extends beyond file size"
-                }
-            }
+            // Fallback return to satisfy all paths
             return sliceInfo
         }
-        
+
         // ---------- FAT or THIN ----------
         if magic == FAT_MAGIC || magic == FAT_MAGIC_64 {
             dbg("Detected fat Mach‑O")
@@ -296,15 +303,15 @@ class MachOParser {
         if !allExportedSymbols.isEmpty {
             result["exports"] = Array(allExportedSymbols).sorted()
         }
-
+        
         // Attach aggregated dylibs
         if !allDylibs.isEmpty {
             result["dylibs"] = allDylibs
         }
-
+        
         // Placeholder for recursive handling
         if recursive { result["filesParsed"] = [] }
-
+        
         // Write per-slice JSON files for FAT binaries only if output path is set
         if let outPath = outputPath,
            let isFat = result["fat"] as? Bool, isFat,
@@ -318,14 +325,13 @@ class MachOParser {
                 let rawMachOData = fileData.subdata(in: offset..<offset+size)
                 // Use precomputed hash from slice info
                 guard let hash = slice["sha256"] as? String else { continue }
-
+                
                 let outURL = outputDirectory.appendingPathComponent("\(hash).json")
                 // Format and write the JSON for this slice
                 let sliceJSON = try JSONOutputFormatter.format(output: slice)
                 try sliceJSON.write(to: outURL, atomically: true, encoding: String.Encoding.utf8)
             }
         }
-
         return try JSONOutputFormatter.format(output: result)
     }
 }
