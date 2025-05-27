@@ -7,9 +7,18 @@ public class SymbolParser {
     }
 
     private static func readUInt64(from data: Data, at offset: Int, isBigEndian: Bool) -> UInt64 {
-        let value: UInt64 = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt64.self) }
-        return isBigEndian ? UInt64(bigEndian: value) : UInt64(littleEndian: value)
-    }
+        let value: UInt64 = data.withUnsafeBytes { rawBuffer in
+                let ptr = rawBuffer.baseAddress!.advanced(by: offset)
+                if UInt(bitPattern: ptr) % UInt(MemoryLayout<UInt64>.alignment) == 0 {
+                    return ptr.load(as: UInt64.self)
+                } else {
+                    var tmp: UInt64 = 0
+                    memcpy(&tmp, ptr, MemoryLayout<UInt64>.size)
+                    return tmp
+                }
+            }
+            return isBigEndian ? UInt64(bigEndian: value) : UInt64(littleEndian: value)
+        }
 
     private static func readUInt8(from data: Data, at offset: Int) -> UInt8 {
         return data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt8.self) }

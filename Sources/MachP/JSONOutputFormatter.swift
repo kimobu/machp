@@ -11,14 +11,15 @@ public class JSONOutputFormatter {
     /// - Returns: A JSON string with standardized key naming.
     /// - Throws: An error if the JSON serialization fails.
     public static func format(output: [String: Any]) throws -> String {
-        // Standardize keys to snake_case for consistency (e.g. "loadCommands" becomes "load_commands").
-        let standardizedOutput = standardizeKeys(in: output)
-        
-        let jsonData = try JSONSerialization.data(withJSONObject: standardizedOutput, options: .prettyPrinted)
-        guard let jsonString = String(data: jsonData, encoding: .utf8) else {
-            throw NSError(domain: "JSONOutputFormatter", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unable to encode JSON as string"])
-        }
-        return jsonString
+        // Standardize keys to snake_case for consistency
+            let standardizedOutput = standardizeKeys(in: output)
+            // Sanitize for JSON
+            let sanitizedOutput = sanitizeForJSON(standardizedOutput)
+            let jsonData = try JSONSerialization.data(withJSONObject: sanitizedOutput, options: .prettyPrinted)
+            guard let jsonString = String(data: jsonData, encoding: .utf8) else {
+                throw NSError(domain: "JSONOutputFormatter", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unable to encode JSON as string"])
+            }
+            return jsonString
     }
     
     /// Recursively standardizes keys in the dictionary to use snake_case.
@@ -57,5 +58,25 @@ public class JSONOutputFormatter {
             }
         }
         return result
+    }
+    
+    /// Recursively converts Data to base64 strings for JSON serialization
+    ///
+    /// - Parameter object: The input object
+    /// - Returns: a base64 encoded string
+    private static func sanitizeForJSON(_ object: Any) -> Any {
+        if let dict = object as? [String: Any] {
+            var newDict = [String: Any]()
+            for (key, value) in dict {
+                newDict[key] = sanitizeForJSON(value)
+            }
+            return newDict
+        } else if let array = object as? [Any] {
+            return array.map { sanitizeForJSON($0) }
+        } else if let data = object as? Data {
+            return data.base64EncodedString()
+        } else {
+            return object
+        }
     }
 }

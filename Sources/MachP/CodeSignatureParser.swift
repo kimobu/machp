@@ -114,27 +114,37 @@ public class CodeSignatureParser {
     /// Parses DER-encoded entitlements (ASN.1-wrapped plist) and returns entitlement keys.
     /// Parses DER-encoded entitlements (ASN.1-wrapped plist) and returns entitlement keys.
     public static func extractEntitlementsDER(from derData: Data) -> [String]? {
-        logger.error("[CodeSignatureParser] extractEntitlementsDER called with data length \(derData.count)")
+        logger.debug("[CodeSignatureParser] extractEntitlementsDER called with data length \(derData.count)")
         // Strip the 8-byte BlobHeader
         guard derData.count > 8 else {
             logger.warning("[CodeSignatureParser] DER entitlement data too short to strip header")
             return nil
         }
         let data = derData.subdata(in: 8..<derData.count)
+        // --- Prevent pointer-alignment trap: copy to aligned buffer if necessary ---
+        var alignedData: Data
+        if let base = data.withUnsafeBytes({ $0.baseAddress }),
+           (UInt(bitPattern: base) % UInt(MemoryLayout<UInt32>.alignment)) == 0 {
+            alignedData = data
+        } else {
+            logger.warning("[CodeSignatureParser] DER entitlements pointer misaligned; copying to aligned buffer")
+            alignedData = Data(data)
+        }
+        
         var idx = 0
 
         // Read outer sequence tag (Application 16, 0x70)
-        guard idx < data.count else { return nil }
+        guard idx < alignedData.count else { return nil }
         idx += 1
         // Read outer length
-        guard idx < data.count else { return nil }
-        let lengthByte = data[idx]; idx += 1
+        guard idx < alignedData.count else { return nil }
+        let lengthByte = alignedData[idx]; idx += 1
         var length = 0
         if (lengthByte & 0x80) != 0 {
             let byteCount = Int(lengthByte & 0x7F)
             for _ in 0..<byteCount {
-                guard idx < data.count else { return nil }
-                length = (length << 8) | Int(data[idx])
+                guard idx < alignedData.count else { return nil }
+                length = (length << 8) | Int(alignedData[idx])
                 idx += 1
             }
         } else {
@@ -142,23 +152,23 @@ public class CodeSignatureParser {
         }
 
         // Skip the INTEGER wrapper (tag=0x02)
-        guard idx + 2 <= data.count else { return nil }
+        guard idx + 2 <= alignedData.count else { return nil }
         idx += 1               // skip tag
-        let intLen = Int(data[idx]); idx += 1
+        let intLen = Int(alignedData[idx]); idx += 1
         idx += intLen          // skip integer contents
 
         // Context-specific dict tag (0xB0)
-        guard idx < data.count else { return nil }
+        guard idx < alignedData.count else { return nil }
         idx += 1
         // Read dict length
-        guard idx < data.count else { return nil }
-        let dictLenByte = data[idx]; idx += 1
+        guard idx < alignedData.count else { return nil }
+        let dictLenByte = alignedData[idx]; idx += 1
         var dictLen = 0
         if (dictLenByte & 0x80) != 0 {
             let byteCount = Int(dictLenByte & 0x7F)
             for _ in 0..<byteCount {
-                guard idx < data.count else { return nil }
-                dictLen = (dictLen << 8) | Int(data[idx])
+                guard idx < alignedData.count else { return nil }
+                dictLen = (dictLen << 8) | Int(alignedData[idx])
                 idx += 1
             }
         } else {
@@ -170,20 +180,20 @@ public class CodeSignatureParser {
         let end = idx + dictLen
         while idx < end {
             // Expect sequence wrapper (0x30)
-            guard data[idx] == 0x30 else { break }
+            guard alignedData[idx] == 0x30 else { break }
             idx += 1
             // Entry length
-            guard idx < data.count else { break }
-            let entryLen = Int(data[idx]); idx += 1
+            guard idx < alignedData.count else { break }
+            let entryLen = Int(alignedData[idx]); idx += 1
             let entryEnd = idx + entryLen
 
             // Expect UTF8 string tag (0x0C)
-            guard data[idx] == 0x0C else { break }
+            guard alignedData[idx] == 0x0C else { break }
             idx += 1
-            guard idx < data.count else { break }
-            let keyLen = Int(data[idx]); idx += 1
-            guard idx + keyLen <= data.count else { break }
-            let keyData = data.subdata(in: idx..<(idx + keyLen))
+            guard idx < alignedData.count else { break }
+            let keyLen = Int(alignedData[idx]); idx += 1
+            guard idx + keyLen <= alignedData.count else { break }
+            let keyData = alignedData.subdata(in: idx..<(idx + keyLen))
             if let key = String(data: keyData, encoding: .utf8) {
                 keys.append(key)
             }
@@ -206,7 +216,7 @@ public class CodeSignatureParser {
         var requirement: SecRequirement?
         let status = SecRequirementCreateWithData(data as CFData, SecCSFlags(), &requirement)
         if status != errSecSuccess || requirement == nil {
-            logger.warning("[CodeSignatureParser] SecRequirementCreateWithData failed: \(status); falling back to ASCII extraction")
+            logger.debug("[CodeSignatureParser] SecRequirementCreateWithData failed: \(status); falling back to ASCII extraction")
             // Fallback: extract contiguous printable ASCII substrings of length >= 4
             var substrings: [String] = []
             var current = ""
@@ -243,7 +253,7 @@ public class CodeSignatureParser {
     public static func parseCodeDirectory(from blobData: Data) -> [String: Any]? {
         // Ensure we have at least 40 bytes for the header.
         guard blobData.count >= 40 else { return nil }
-        print("Entering parseCodeDirectory with blobData count:", blobData.count)
+        logger.debug("Entering parseCodeDirectory with blobData count: \(blobData.count)")
         var offset = 0
         // Read fixed header fields:
         guard let magic = try? readUInt32(from: blobData, at: offset) else { return nil }
