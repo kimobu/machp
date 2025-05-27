@@ -11,6 +11,23 @@ enum MachOParsingError: Error {
 private let logger = LoggerFactory.make("com.machp.MachOParser")
 
 class MachOParser {
+
+    /// Recursively convert any Data values into base64 strings so JSONSerialization can handle them.
+    private static func sanitizeJSON(_ object: Any) -> Any {
+        if let dict = object as? [String: Any] {
+            var newDict = [String: Any]()
+            for (key, value) in dict {
+                newDict[key] = sanitizeJSON(value)
+            }
+            return newDict
+        } else if let array = object as? [Any] {
+            return array.map { sanitizeJSON($0) }
+        } else if let data = object as? Data {
+            return data.base64EncodedString()
+        } else {
+            return object
+        }
+    }
     
     static func parseFile(at filePath: String,
                           recursive: Bool,
@@ -179,12 +196,17 @@ class MachOParser {
                             let csOffset = isBigEndianSlice ? UInt32(bigEndian: csOffsetRaw) : UInt32(littleEndian: csOffsetRaw)
                             let csSize   = isBigEndianSlice ? UInt32(bigEndian: csSizeRaw)   : UInt32(littleEndian: csSizeRaw)
                             logger.debug("Starting csOffset \(csOffset), size \(csSize)")
-                            let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(
-                                from: sliceData,
-                                csOffset: Int(csOffset),
-                                csSize:   Int(csSize)
-                            )
-                            headerInfo["codeSignature"] = csInfo
+                            do {
+                                let csInfo = try CodeSigAndEntitlement.extractCodeSignatureInfo(
+                                    from: sliceData,
+                                    csOffset: Int(csOffset),
+                                    csSize:   Int(csSize)
+                                )
+                                headerInfo["codeSignature"] = csInfo
+                            } catch {
+                                print("❌ CodeSignatureParser failed for file \(filePath) at offset \(csOffset), size \(csSize): \(error)")
+                                throw error
+                            }
                         }
                         cmdOffset += Int(cmdsize)
                     }
@@ -318,6 +340,12 @@ class MachOParser {
                 try sliceJSON.write(to: outURL, atomically: true, encoding: String.Encoding.utf8)
             }
         }
-        return try JSONOutputFormatter.format(output: result)
+        let sanitizedResult = MachOParser.sanitizeJSON(result)
+        do {
+            return try JSONOutputFormatter.format(output: sanitizedResult as! [String: Any])
+        } catch {
+            print("⚠️ JSON formatting failed for file: \(filePath)")
+            throw error
+        }
     }
 }

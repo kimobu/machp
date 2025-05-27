@@ -78,6 +78,7 @@ func parseFiles(_ files: [String], with options: CLIOptions) {
         queue.async {
             defer { group.leave() }
             do {
+                logger.info("Starting Mach-O parsing for file: \(file)")
                 let jsonOutput = try MachOParser.parseFile(
                     at: file,
                     recursive: false,
@@ -106,8 +107,6 @@ if options.debug {
 LoggerFactory.setup(debug: debugEnabled)
 private let logger = LoggerFactory.make("com.machp")
 
-print("Starting Mach-O parsing for file: \(options.filePath)")
-
 if options.recursive {
     logger.debug("Recursive parsing is enabled.")
 }
@@ -122,6 +121,7 @@ if options.recursive {
     parseFiles(files, with: options)
 } else {
     do {
+        logger.info("Starting Mach-O parsing for file: \(options.filePath)")
         let jsonOutput = try MachOParser.parseFile(
                 at: options.filePath,
                 recursive: false,
